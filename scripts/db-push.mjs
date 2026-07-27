@@ -51,9 +51,10 @@ try {
 }
 
 console.log("Running: prisma db push …");
+// Prisma 7: no --skip-generate on db push (generate already ran in npm run build)
 const result = spawnSync(
   "npx",
-  ["prisma", "db", "push", "--skip-generate", "--accept-data-loss"],
+  ["prisma", "db", "push", "--accept-data-loss"],
   { stdio: "inherit", shell: process.platform === "win32" },
 );
 
