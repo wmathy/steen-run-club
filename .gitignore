@@ -24,6 +24,12 @@
 .DS_Store
 *.pem
 
+# local agent / IDE tooling (not part of the app)
+.agents/
+.claude/
+.windsurf/
+skills-lock.json
+
 # debug
 npm-debug.log*
 yarn-debug.log*
@@ -31,7 +37,10 @@ yarn-error.log*
 .pnpm-debug.log*
 
 # env files (can opt-in for committing if needed)
-.env*
+.env
+.env.local
+.env.*.local
+!.env.example
 
 # vercel
 .vercel
@@ -39,3 +48,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/src/generated/prisma
+
+# SQLite databases (never commit password hashes / tokens / chat history)
+*.db
+*.db-journal
+prisma/*.db
+prisma/*.db-journal

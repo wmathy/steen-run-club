@@ -1,0 +1,160 @@
+// Steen Run Club — Prisma schema
+// Postgres for local + Vercel (Neon free tier is fine for testing with friends).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  messages         Message[]
+  runs             Run[]
+  trainingPlans    TrainingPlan[]
+  coachProfile     CoachProfile?
+  googleCalendar   GoogleCalendar?
+  stravaConnection StravaConnection?
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  userId    String
+  role      String // "user" | "assistant" | "system"
+  content   String // plain text for simple display / search
+  partsJson String   @default("[]") // full UIMessage parts as JSON
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model Run {
+  id               String   @id @default(cuid())
+  userId           String
+  date             DateTime
+  distanceMiles    Float
+  durationMin      Float?
+  type             String // easy | tempo | interval | long | race | recovery | other
+  notes            String?
+  perceivedEffort  Int? // 1-10
+  /// manual | strava | coach
+  source           String   @default("manual")
+  /// Strava activity id for dedup when source=strava
+  stravaActivityId String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, stravaActivityId])
+  @@index([userId, date])
+}
+
+model TrainingPlan {
+  id        String    @id @default(cuid())
+  userId    String
+  title     String
+  goal      String?
+  startDate DateTime
+  endDate   DateTime?
+  notes     String?
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  weeks PlanWeek[]
+
+  @@index([userId, isActive])
+}
+
+model PlanWeek {
+  id         String @id @default(cuid())
+  planId     String
+  weekNumber Int
+  focus      String?
+  notes      String?
+
+  plan     TrainingPlan  @relation(fields: [planId], references: [id], onDelete: Cascade)
+  workouts PlanWorkout[]
+
+  @@unique([planId, weekNumber])
+}
+
+model PlanWorkout {
+  id            String    @id @default(cuid())
+  weekId        String
+  dayOfWeek     Int // 0 = Monday … 6 = Sunday (ISO-style week for plans)
+  date          DateTime? // optional concrete calendar date
+  type          String // easy | tempo | interval | long | race | rest | strength | cross
+  title         String
+  description   String?
+  distanceMiles Float?
+  durationMin   Float?
+  completed     Boolean   @default(false)
+  googleEventId String? // set after successful Calendar sync (idempotency)
+
+  week PlanWeek @relation(fields: [weekId], references: [id], onDelete: Cascade)
+
+  @@index([weekId, dayOfWeek])
+}
+
+/// Long-term memory / coach profile injected into system context
+model CoachProfile {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  summary      String   @default("")
+  goals        String   @default("")
+  injuries     String   @default("")
+  preferences  String   @default("")
+  raceCalendar String   @default("") // free-text or JSON string
+  fitnessLevel String   @default("")
+  schedule     String   @default("")
+  /// concise | balanced | detailed — how the coach writes in chat
+  coachingStyle String  @default("concise")
+  updatedAt    DateTime @updatedAt
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model GoogleCalendar {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  accessToken  String
+  refreshToken String?
+  expiryDate   DateTime?
+  calendarId   String   @default("primary")
+  connectedAt  DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model StravaConnection {
+  id             String    @id @default(cuid())
+  userId         String    @unique
+  athleteId      BigInt
+  accessToken    String
+  refreshToken   String
+  expiryDate     DateTime
+  scopes         String    @default("")
+  lastSyncedAt   DateTime?
+  connectedAt    DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([athleteId])
+}
