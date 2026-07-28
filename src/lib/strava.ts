@@ -13,11 +13,20 @@ export function isStravaConfigured(): boolean {
   );
 }
 
+/**
+ * Must match Strava API "Authorization Callback Domain" + path exactly.
+ * Live: Authorization Callback Domain = steen-run-club.vercel.app
+ *       redirect_uri = https://steen-run-club.vercel.app/api/strava/callback
+ */
 export function getStravaRedirectUri(): string {
-  return (
-    process.env.STRAVA_REDIRECT_URI ||
-    `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/api/strava/callback`
-  );
+  const explicit = process.env.STRAVA_REDIRECT_URI?.trim();
+  if (explicit) {
+    return explicit.replace(/\/$/, "");
+  }
+  const base = (
+    process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
+  ).replace(/\/$/, "");
+  return `${base}/api/strava/callback`;
 }
 
 export function getStravaWebhookVerifyToken(): string {
@@ -57,6 +66,8 @@ export async function exchangeStravaCode(code: string): Promise<TokenResponse> {
       client_secret: process.env.STRAVA_CLIENT_SECRET,
       code,
       grant_type: "authorization_code",
+      // Must match the authorize step redirect_uri exactly
+      redirect_uri: getStravaRedirectUri(),
     }),
   });
   if (!res.ok) {
