@@ -125,13 +125,18 @@ export function SettingsClient({
         setMessage("Failed to save coaching style");
         return;
       }
-      setMessage(
-        style === "concise"
-          ? "Coaching style: Concise — short, focused replies."
-          : style === "balanced"
-            ? "Coaching style: Balanced — clear replies with useful context."
-            : "Coaching style: Detailed — fuller explanations and rationale.",
-      );
+      const styleLabels: Record<CoachingStyle, string> = {
+        concise: "Coaching style: Concise — short, focused replies.",
+        balanced:
+          "Coaching style: Balanced — clear replies with useful context.",
+        detailed:
+          "Coaching style: Detailed — fuller explanations and rationale.",
+        motivational:
+          "Coaching style: Motivational — finish the run, keep showing up.",
+        goggins:
+          "Coaching style: Goggins Mode — stay hard. Direct, raw, no excuses.",
+      };
+      setMessage(styleLabels[style]);
       router.refresh();
     } finally {
       setSavingStyle(false);

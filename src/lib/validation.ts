@@ -66,6 +66,8 @@ export const coachingStyleSchema = z.enum([
   "concise",
   "balanced",
   "detailed",
+  "motivational",
+  "goggins",
 ]);
 
 export const coachProfileUpdateSchema = z.object({
