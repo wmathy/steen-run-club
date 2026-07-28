@@ -1,7 +1,6 @@
 import { Suspense } from "react";
 import { SettingsClient } from "@/components/settings-client";
 import { getCurrentUser } from "@/lib/auth";
-import { isGoogleConfigured } from "@/lib/google-calendar";
 import { isStravaConfigured } from "@/lib/strava";
 
 export default async function SettingsPage() {
@@ -13,8 +12,6 @@ export default async function SettingsPage() {
       <Suspense fallback={<div className="text-sm text-muted">Loading…</div>}>
         <SettingsClient
           profile={user.coachProfile}
-          googleConnected={Boolean(user.googleCalendar)}
-          googleConfigured={isGoogleConfigured()}
           stravaConnected={Boolean(user.stravaConnection)}
           stravaConfigured={isStravaConfigured()}
           stravaLastSyncedAt={

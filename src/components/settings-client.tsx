@@ -51,8 +51,6 @@ function formatSyncTime(iso: string): string {
 
 export function SettingsClient({
   profile,
-  googleConnected,
-  googleConfigured,
   stravaConnected,
   stravaConfigured,
   stravaLastSyncedAt,
@@ -60,8 +58,6 @@ export function SettingsClient({
   userName,
 }: {
   profile: Profile;
-  googleConnected: boolean;
-  googleConfigured: boolean;
   stravaConnected: boolean;
   stravaConfigured: boolean;
   stravaLastSyncedAt?: string | null;
@@ -70,7 +66,6 @@ export function SettingsClient({
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const calendarStatus = searchParams.get("calendar");
   const stravaStatus = searchParams.get("strava");
   const [saving, setSaving] = useState(false);
   const [syncingStrava, setSyncingStrava] = useState(false);
@@ -137,32 +132,6 @@ export function SettingsClient({
     }
   }
 
-  async function connectGoogle() {
-    const res = await fetch("/api/calendar/connect");
-    const data = await res.json();
-    if (data.url) {
-      window.location.href = data.url;
-    } else {
-      setMessage(data.error || "Google Calendar not available");
-    }
-  }
-
-  async function disconnectGoogle() {
-    await fetch("/api/calendar/disconnect", { method: "POST" });
-    router.refresh();
-  }
-
-  async function syncCalendar() {
-    setMessage(null);
-    const res = await fetch("/api/calendar/sync", { method: "POST" });
-    const data = await res.json();
-    if (!res.ok) {
-      setMessage(data.error || "Sync failed");
-      return;
-    }
-    setMessage(`Synced ${data.created} event(s) to Google Calendar`);
-  }
-
   async function connectStrava() {
     const res = await fetch("/api/strava/connect");
     const data = await res.json();
@@ -209,16 +178,6 @@ export function SettingsClient({
         </p>
       </div>
 
-      {calendarStatus === "connected" && (
-        <div className="rounded-lg border border-accent/30 bg-accent-soft px-3 py-2 text-sm text-accent">
-          Google Calendar connected.
-        </div>
-      )}
-      {calendarStatus === "error" && (
-        <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
-          Google Calendar connection failed.
-        </div>
-      )}
       {stravaStatus === "connected" && (
         <div className="rounded-lg border border-accent/30 bg-accent-soft px-3 py-2 text-sm text-accent">
           Strava connected. Recent runs were imported — your coach can use them.
@@ -305,53 +264,6 @@ export function SettingsClient({
             className="rounded-lg bg-[#fc4c02] px-4 py-2 text-sm font-semibold text-white hover:bg-[#e34402]"
           >
             Connect Strava
-          </button>
-        )}
-      </section>
-
-      <section className="rounded-2xl border border-card-border bg-card/80 p-5">
-        <h2 className="mb-1 text-sm font-semibold">Google Calendar</h2>
-        <p className="mb-4 text-xs text-muted">
-          Optional. Push plan workouts to your calendar when connected. Coach
-          plans always work in-app without this.
-        </p>
-        {!googleConfigured ? (
-          <div className="rounded-lg border border-dashed border-card-border bg-input-bg/50 p-4 text-sm text-muted">
-            <p className="font-medium text-foreground/80">Coming soon / scaffold ready</p>
-            <p className="mt-1 text-xs">
-              Set <code className="text-accent">GOOGLE_CLIENT_ID</code>,{" "}
-              <code className="text-accent">GOOGLE_CLIENT_SECRET</code>, and{" "}
-              <code className="text-accent">GOOGLE_REDIRECT_URI</code> in{" "}
-              <code>.env</code> to enable OAuth.
-            </p>
-          </div>
-        ) : googleConnected ? (
-          <div className="flex flex-wrap gap-2">
-            <span className="rounded-full bg-accent-soft px-3 py-1 text-xs font-medium text-accent">
-              Connected
-            </span>
-            <button
-              type="button"
-              onClick={syncCalendar}
-              className="rounded-lg border border-card-border px-3 py-1.5 text-xs hover:border-accent/40"
-            >
-              Sync active plan
-            </button>
-            <button
-              type="button"
-              onClick={disconnectGoogle}
-              className="rounded-lg border border-card-border px-3 py-1.5 text-xs text-muted hover:text-danger"
-            >
-              Disconnect
-            </button>
-          </div>
-        ) : (
-          <button
-            type="button"
-            onClick={connectGoogle}
-            className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-black"
-          >
-            Connect Google Calendar
           </button>
         )}
       </section>
