@@ -1,3 +1,4 @@
+import { after } from "next/server";
 import { NextResponse } from "next/server";
 import { AuthError, requireUserId } from "@/lib/session";
 import { prisma } from "@/lib/prisma";
@@ -7,6 +8,7 @@ import {
   createRunSchema,
   parseIsoDateAtNoon,
 } from "@/lib/validation";
+import { schedulePostRunCoachFeedback } from "@/lib/post-run-coach";
 
 export async function GET(req: Request) {
   try {
@@ -87,8 +89,24 @@ export async function POST(req: Request) {
         type: input.type,
         notes: input.notes ?? null,
         perceivedEffort: input.perceivedEffort ?? null,
+        source: "manual",
       },
     });
+
+    after(() =>
+      schedulePostRunCoachFeedback(userId, [
+        {
+          id: run.id,
+          date: run.date,
+          distanceMiles: run.distanceMiles,
+          durationMin: run.durationMin,
+          type: run.type,
+          notes: run.notes,
+          perceivedEffort: run.perceivedEffort,
+          source: run.source,
+        },
+      ]),
+    );
 
     return NextResponse.json({ run }, { status: 201 });
   } catch (err) {

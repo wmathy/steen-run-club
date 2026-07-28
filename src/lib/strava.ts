@@ -1,6 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { decryptSecret, encryptSecret } from "@/lib/crypto-tokens";
 import { withUserLock } from "@/lib/mutex";
+import {
+  schedulePostRunCoachFeedback,
+  type LoggedRunSummary,
+} from "@/lib/post-run-coach";
 
 const STRAVA_AUTH = "https://www.strava.com/oauth/authorize";
 const STRAVA_TOKEN = "https://www.strava.com/oauth/token";
@@ -229,12 +233,16 @@ function activityDateLocal(startLocal: string): Date {
 export async function importStravaActivityForUser(
   userId: string,
   activity: StravaActivitySummary,
-): Promise<"created" | "updated" | "skipped"> {
+): Promise<
+  | { status: "created"; run: LoggedRunSummary }
+  | { status: "updated"; run: LoggedRunSummary }
+  | { status: "skipped" }
+> {
   const type = mapStravaRunType(activity);
-  if (!type) return "skipped";
+  if (!type) return { status: "skipped" };
 
   const distanceMiles = metersToMiles(activity.distance);
-  if (!(distanceMiles > 0)) return "skipped";
+  if (!(distanceMiles > 0)) return { status: "skipped" };
 
   const stravaActivityId = String(activity.id);
   const notes = `Synced from Strava: ${activity.name}`.slice(0, 4000);
@@ -246,7 +254,7 @@ export async function importStravaActivityForUser(
   });
 
   if (existing) {
-    await prisma.run.update({
+    const run = await prisma.run.update({
       where: { id: existing.id },
       data: {
         date,
@@ -257,10 +265,22 @@ export async function importStravaActivityForUser(
         source: "strava",
       },
     });
-    return "updated";
+    return {
+      status: "updated",
+      run: {
+        id: run.id,
+        date: run.date,
+        distanceMiles: run.distanceMiles,
+        durationMin: run.durationMin,
+        type: run.type,
+        notes: run.notes,
+        perceivedEffort: run.perceivedEffort,
+        source: run.source,
+      },
+    };
   }
 
-  await prisma.run.create({
+  const run = await prisma.run.create({
     data: {
       userId,
       date,
@@ -272,7 +292,19 @@ export async function importStravaActivityForUser(
       stravaActivityId,
     },
   });
-  return "created";
+  return {
+    status: "created",
+    run: {
+      id: run.id,
+      date: run.date,
+      distanceMiles: run.distanceMiles,
+      durationMin: run.durationMin,
+      type: run.type,
+      notes: run.notes,
+      perceivedEffort: run.perceivedEffort,
+      source: run.source,
+    },
+  };
 }
 
 async function fetchActivity(
@@ -339,23 +371,14 @@ export async function syncStravaRunsForUser(
     let created = 0;
     let updated = 0;
     let skipped = 0;
-    const newRuns: Array<{ date: string; miles: number; type: string; name: string }> =
-      [];
+    const createdRuns: LoggedRunSummary[] = [];
 
     for (const activity of activities) {
       const result = await importStravaActivityForUser(userId, activity);
-      if (result === "created") {
+      if (result.status === "created") {
         created += 1;
-        const t = mapStravaRunType(activity);
-        if (t) {
-          newRuns.push({
-            date: activity.start_date_local.slice(0, 10),
-            miles: metersToMiles(activity.distance),
-            type: t,
-            name: activity.name,
-          });
-        }
-      } else if (result === "updated") updated += 1;
+        createdRuns.push(result.run);
+      } else if (result.status === "updated") updated += 1;
       else skipped += 1;
     }
 
@@ -364,8 +387,10 @@ export async function syncStravaRunsForUser(
       data: { lastSyncedAt: new Date() },
     });
 
-    if (newRuns.length > 0) {
-      await notifyCoachOfStravaRuns(userId, newRuns);
+    if (createdRuns.length > 0) {
+      await notifyCoachOfStravaRuns(userId, createdRuns);
+      // One coach debrief for all newly created, recent runs (avoids chat flood)
+      schedulePostRunCoachFeedback(userId, createdRuns);
     }
 
     return { created, updated, skipped };
@@ -407,30 +432,20 @@ export async function importStravaActivityById(
       data: { lastSyncedAt: new Date() },
     });
 
-    if (result === "created") {
-      const t = mapStravaRunType(activity);
-      if (t) {
-        await notifyCoachOfStravaRuns(conn.userId, [
-          {
-            date: activity.start_date_local.slice(0, 10),
-            miles: metersToMiles(activity.distance),
-            type: t,
-            name: activity.name,
-          },
-        ]);
-      }
+    if (result.status === "created") {
+      await notifyCoachOfStravaRuns(conn.userId, [result.run]);
+      schedulePostRunCoachFeedback(conn.userId, [result.run]);
     }
   });
 }
 
 /**
- * Keep chat clean: do not inject Strava system messages into the conversation.
- * Runs are already in the log; the coach loads them via get_recent_runs.
- * Only note Strava on the coach profile once.
+ * Note Strava on the coach profile once (no system spam in chat).
+ * Post-run coach debrief is handled separately.
  */
 async function notifyCoachOfStravaRuns(
   userId: string,
-  _runs: Array<{ date: string; miles: number; type: string; name: string }>,
+  _runs: LoggedRunSummary[],
 ): Promise<void> {
   const profile = await prisma.coachProfile.findUnique({ where: { userId } });
   const tag = "Strava auto-sync enabled.";
