@@ -26,11 +26,43 @@ function MessageParts({ text }: { text: string }) {
   );
 }
 
+/** How close to the bottom counts as "following" the stream (px). */
+const STICK_BOTTOM_THRESHOLD = 120;
+
 export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
   const [input, setInput] = useState("");
+  /** Show "Jump to latest" when user scrolled up during a long reply */
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  /** When true, new stream chunks keep the view pinned to the bottom */
+  const stickToBottomRef = useRef(true);
+
+  function isNearBottom(el: HTMLDivElement): boolean {
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    return distance <= STICK_BOTTOM_THRESHOLD;
+  }
+
+  function scrollToBottom(behavior: ScrollBehavior = "auto") {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
+  }
+
+  function handleScroll() {
+    const el = scrollRef.current;
+    if (!el) return;
+    const near = isNearBottom(el);
+    stickToBottomRef.current = near;
+    setShowJumpToLatest(!near);
+  }
+
+  function jumpToLatest() {
+    stickToBottomRef.current = true;
+    setShowJumpToLatest(false);
+    scrollToBottom("smooth");
+  }
 
   function resizeTextarea() {
     const el = textareaRef.current;
@@ -101,8 +133,13 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
     },
   });
 
+  // Auto-follow only if the user hasn't scrolled up to read earlier text
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    if (!stickToBottomRef.current) return;
+    // Instant scroll during stream so we don't fight touch gestures with "smooth"
+    const behavior: ScrollBehavior =
+      status === "streaming" || status === "submitted" ? "auto" : "smooth";
+    requestAnimationFrame(() => scrollToBottom(behavior));
   }, [messages, status]);
 
   const busy = status === "submitted" || status === "streaming";
@@ -110,12 +147,16 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
   function submitMessage() {
     const text = input.trim();
     if (!text || busy) return;
+    // New send: pin to bottom so their message + reply are visible
+    stickToBottomRef.current = true;
+    setShowJumpToLatest(false);
     sendMessage({ text });
     setInput("");
     requestAnimationFrame(() => {
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
       }
+      scrollToBottom("smooth");
     });
   }
 
@@ -146,9 +187,12 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
         </button>
       </div>
 
+      <div className="relative min-h-0 flex-1">
       <div
         ref={scrollRef}
-        className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-3 py-3 sm:space-y-4 sm:px-4 md:px-6 md:py-4"
+        onScroll={handleScroll}
+        className="absolute inset-0 space-y-3 overflow-y-auto overscroll-contain px-3 py-3 touch-pan-y sm:space-y-4 sm:px-4 md:px-6 md:py-4"
+        style={{ WebkitOverflowScrolling: "touch" }}
       >
         {messages.length === 0 && (
           <div className="mx-auto max-w-md rounded-2xl border border-card-border bg-card/70 p-5 text-center sm:p-6">
@@ -229,6 +273,17 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
         )}
 
         <div ref={bottomRef} className="h-1 shrink-0" />
+      </div>
+
+      {showJumpToLatest && (
+        <button
+          type="button"
+          onClick={jumpToLatest}
+          className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-card-border bg-card/95 px-3 py-2 text-xs font-medium text-accent shadow-lg backdrop-blur active:scale-[0.98]"
+        >
+          Jump to latest
+        </button>
+      )}
       </div>
 
       {/* Composer stays above bottom nav on mobile */}
