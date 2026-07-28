@@ -168,12 +168,26 @@ type WorkoutLike = {
 };
 
 function resolveWorkoutDate(wo: WorkoutLike): Date {
-  if (wo.date) return new Date(wo.date);
+  if (wo.date) {
+    // Prefer calendar date from stored value (UTC-stable)
+    const y = wo.date.getUTCFullYear();
+    const m = wo.date.getUTCMonth();
+    const d = wo.date.getUTCDate();
+    return new Date(y, m, d, 9, 0, 0);
+  }
 
-  const d = new Date(wo.planStart);
-  d.setHours(9, 0, 0, 0);
-  d.setDate(d.getDate() + (wo.weekNumber - 1) * 7 + wo.dayOfWeek);
-  return d;
+  // Align to Monday-based weeks (same as plan UI)
+  const start = new Date(wo.planStart);
+  const y = start.getUTCFullYear();
+  const m = start.getUTCMonth();
+  const day = start.getUTCDate();
+  const base = new Date(y, m, day, 9, 0, 0);
+  const jsDay = base.getDay();
+  const offsetToMonday = jsDay === 0 ? -6 : 1 - jsDay;
+  base.setDate(base.getDate() + offsetToMonday);
+  const dow = Math.min(6, Math.max(0, Math.floor(wo.dayOfWeek)));
+  base.setDate(base.getDate() + (wo.weekNumber - 1) * 7 + dow);
+  return base;
 }
 
 export async function createEventsFromWorkouts(

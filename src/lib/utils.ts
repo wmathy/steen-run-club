@@ -14,6 +14,7 @@ export function formatDuration(min: number | null | undefined): string {
   return `${h}h ${m.toString().padStart(2, "0")}m`;
 }
 
+/** dayOfWeek in plans: 0=Monday … 6=Sunday */
 export function dayName(dayOfWeek: number): string {
   return ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][dayOfWeek] ?? "?";
 }
@@ -22,43 +23,62 @@ export function workoutTypeLabel(type: string): string {
   return type.charAt(0).toUpperCase() + type.slice(1);
 }
 
-/** Parse plan start date as local calendar date (noon to avoid TZ edge cases). */
+/**
+ * Parse a calendar date (YYYY-MM-DD or Date) into a local noon Date.
+ * For Date values from Postgres/Prisma (often midnight or noon UTC), use
+ * UTC Y/M/D so US timezones don't shift the calendar day back one day.
+ */
 export function parsePlanDate(value: Date | string): Date {
   if (value instanceof Date) {
-    return new Date(
-      value.getFullYear(),
-      value.getMonth(),
-      value.getDate(),
-      12,
-      0,
-      0,
-    );
+    const y = value.getUTCFullYear();
+    const m = value.getUTCMonth();
+    const d = value.getUTCDate();
+    return new Date(y, m, d, 12, 0, 0);
   }
   const s = value.slice(0, 10);
   const [y, m, d] = s.split("-").map(Number);
   return new Date(y, m - 1, d, 12, 0, 0);
 }
 
-/** Week 1 Mon–Sun starts at plan.startDate; week N is +7*(N-1) days. */
+/**
+ * Monday (local) of the week containing `date`.
+ * JS getDay(): 0=Sun … 6=Sat → plan dayOfWeek 0=Mon … 6=Sun.
+ */
+export function startOfWeekMonday(date: Date | string): Date {
+  const d = parsePlanDate(date);
+  const jsDay = d.getDay(); // 0=Sun … 6=Sat
+  const offsetToMonday = jsDay === 0 ? -6 : 1 - jsDay;
+  d.setDate(d.getDate() + offsetToMonday);
+  return d;
+}
+
+/**
+ * Week N Mon–Sun. Week 1 is the Monday-week that contains plan.startDate
+ * (so day names always match real calendar dates).
+ */
 export function weekDateRange(
   planStart: Date | string,
   weekNumber: number,
 ): { start: Date; end: Date } {
-  const start = parsePlanDate(planStart);
+  const start = startOfWeekMonday(planStart);
   start.setDate(start.getDate() + (weekNumber - 1) * 7);
   const end = new Date(start);
   end.setDate(end.getDate() + 6);
   return { start, end };
 }
 
-/** Concrete date for a workout: plan start + (week-1)*7 + dayOfWeek (0=Mon). */
+/**
+ * Concrete date for a workout.
+ * dayOfWeek: 0=Monday … 6=Sunday, relative to the Monday of plan week N.
+ */
 export function workoutDate(
   planStart: Date | string,
   weekNumber: number,
   dayOfWeek: number,
 ): Date {
-  const d = parsePlanDate(planStart);
-  d.setDate(d.getDate() + (weekNumber - 1) * 7 + dayOfWeek);
+  const d = startOfWeekMonday(planStart);
+  const dow = Math.min(6, Math.max(0, Math.floor(dayOfWeek)));
+  d.setDate(d.getDate() + (weekNumber - 1) * 7 + dow);
   return d;
 }
 

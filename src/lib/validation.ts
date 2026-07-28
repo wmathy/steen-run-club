@@ -115,6 +115,7 @@ export function parseIsoDateAtNoon(date: string): Date {
   if (!isValidIsoCalendarDate(normalized)) {
     throw new Error("Invalid date");
   }
-  // Local noon for storage (consistent with prior behavior)
-  return new Date(normalized + "T12:00:00");
+  // Store as UTC noon so the calendar day is stable across timezones
+  const [y, m, d] = normalized.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
 }

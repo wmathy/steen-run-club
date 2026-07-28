@@ -157,7 +157,7 @@ export function createCoachTools(userId: string) {
         title: z.string().min(1).max(200),
         goal: z.string().max(1000).optional(),
         startDate: isoDateSchema.describe(
-          "ISO date YYYY-MM-DD for week 1 start",
+          "ISO date YYYY-MM-DD for week 1 (any day is fine; the plan UI snaps to that week's Monday). Prefer the Monday of the training week when possible.",
         ),
         endDate: isoDateSchema.optional(),
         notes: z.string().max(4000).optional(),
