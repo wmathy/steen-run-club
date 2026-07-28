@@ -83,6 +83,12 @@ export function SettingsClient({
     normalizeCoachingStyle(profile?.coachingStyle),
   );
   const [savingStyle, setSavingStyle] = useState(false);
+  const [pwForm, setPwForm] = useState({
+    currentPassword: "",
+    newPassword: "",
+    confirmPassword: "",
+  });
+  const [savingPw, setSavingPw] = useState(false);
 
   async function saveProfile(e: React.FormEvent) {
     e.preventDefault();
@@ -129,6 +135,41 @@ export function SettingsClient({
       router.refresh();
     } finally {
       setSavingStyle(false);
+    }
+  }
+
+  async function changePassword(e: React.FormEvent) {
+    e.preventDefault();
+    setMessage(null);
+    if (pwForm.newPassword !== pwForm.confirmPassword) {
+      setMessage("New passwords do not match");
+      return;
+    }
+    setSavingPw(true);
+    try {
+      const res = await fetch("/api/auth/change-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          currentPassword: pwForm.currentPassword,
+          newPassword: pwForm.newPassword,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setMessage(data.error || "Could not update password");
+        return;
+      }
+      setPwForm({
+        currentPassword: "",
+        newPassword: "",
+        confirmPassword: "",
+      });
+      setMessage("Password updated successfully.");
+    } catch {
+      setMessage("Network error");
+    } finally {
+      setSavingPw(false);
     }
   }
 
@@ -343,9 +384,72 @@ export function SettingsClient({
         <button
           type="submit"
           disabled={saving}
-          className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-black disabled:opacity-60"
+          className="min-h-11 rounded-lg bg-accent px-4 py-2.5 text-sm font-semibold text-black disabled:opacity-60"
         >
           {saving ? "Saving…" : "Save profile"}
+        </button>
+      </form>
+
+      <form
+        onSubmit={changePassword}
+        className="space-y-3 rounded-2xl border border-card-border bg-card/80 p-5"
+      >
+        <h2 className="text-sm font-semibold">Change password</h2>
+        <p className="text-xs text-muted">
+          Update your password while signed in. For a lost password, sign out
+          and use{" "}
+          <a href="/forgot-password" className="text-accent hover:underline">
+            Forgot password
+          </a>
+          .
+        </p>
+        <label className="block text-xs">
+          <span className="mb-1 block text-muted">Current password</span>
+          <input
+            type="password"
+            required
+            autoComplete="current-password"
+            value={pwForm.currentPassword}
+            onChange={(e) =>
+              setPwForm({ ...pwForm, currentPassword: e.target.value })
+            }
+            className="min-h-11 w-full rounded-lg border border-card-border bg-input-bg px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-accent/40 sm:text-sm"
+          />
+        </label>
+        <label className="block text-xs">
+          <span className="mb-1 block text-muted">New password</span>
+          <input
+            type="password"
+            required
+            minLength={8}
+            autoComplete="new-password"
+            value={pwForm.newPassword}
+            onChange={(e) =>
+              setPwForm({ ...pwForm, newPassword: e.target.value })
+            }
+            className="min-h-11 w-full rounded-lg border border-card-border bg-input-bg px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-accent/40 sm:text-sm"
+          />
+        </label>
+        <label className="block text-xs">
+          <span className="mb-1 block text-muted">Confirm new password</span>
+          <input
+            type="password"
+            required
+            minLength={8}
+            autoComplete="new-password"
+            value={pwForm.confirmPassword}
+            onChange={(e) =>
+              setPwForm({ ...pwForm, confirmPassword: e.target.value })
+            }
+            className="min-h-11 w-full rounded-lg border border-card-border bg-input-bg px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-accent/40 sm:text-sm"
+          />
+        </label>
+        <button
+          type="submit"
+          disabled={savingPw}
+          className="min-h-11 rounded-lg bg-accent px-4 py-2.5 text-sm font-semibold text-black disabled:opacity-60"
+        >
+          {savingPw ? "Updating…" : "Update password"}
         </button>
       </form>
     </div>

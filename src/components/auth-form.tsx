@@ -1,12 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useState } from "react";
 import { AppLogo } from "@/components/app-logo";
 
-export function AuthForm({ mode }: { mode: "login" | "signup" }) {
+function AuthFormInner({ mode }: { mode: "login" | "signup" }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const resetOk = searchParams.get("reset") === "1";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
@@ -59,6 +61,12 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
             : "Create an account — your coach, plans, and runs stay private."}
         </p>
       </div>
+
+      {mode === "login" && resetOk && (
+        <div className="mb-4 rounded-lg border border-accent/30 bg-accent-soft px-3 py-2 text-sm text-accent">
+          Password updated. Sign in with your new password.
+        </div>
+      )}
 
       <form
         onSubmit={onSubmit}
@@ -113,6 +121,17 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
           />
         </label>
 
+        {mode === "login" && (
+          <div className="text-right">
+            <Link
+              href="/forgot-password"
+              className="text-xs font-medium text-accent hover:underline"
+            >
+              Forgot password?
+            </Link>
+          </div>
+        )}
+
         {error && (
           <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
             {error}
@@ -150,5 +169,19 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
         )}
       </p>
     </div>
+  );
+}
+
+export function AuthForm({ mode }: { mode: "login" | "signup" }) {
+  return (
+    <Suspense
+      fallback={
+        <div className="mx-auto w-full max-w-md text-center text-sm text-muted">
+          Loading…
+        </div>
+      }
+    >
+      <AuthFormInner mode={mode} />
+    </Suspense>
   );
 }
