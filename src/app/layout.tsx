@@ -49,6 +49,19 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
+      <head>
+        {/* Critical base styles so a failed/stale CSS chunk never renders a raw white page */}
+        <style
+          dangerouslySetInnerHTML={{
+            __html: `
+              :root{--background:#0b0f14;--foreground:#e8eef6;--card:#121820;--card-border:#1e2a38;--muted:#8b9bb0;--accent:#3dd68c}
+              html,body{background:#0b0f14;color:#e8eef6;margin:0;min-height:100%}
+              a{color:#3dd68c;text-decoration:none}
+              *{box-sizing:border-box}
+            `,
+          }}
+        />
+      </head>
       <body className="flex min-h-dvh flex-col overscroll-none">{children}</body>
     </html>
   );
