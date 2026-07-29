@@ -1,4 +1,7 @@
+"use client";
+
 import Link from "next/link";
+import { useEffect, useId, useState } from "react";
 import {
   dayName,
   formatDuration,
@@ -8,6 +11,7 @@ import {
   weekDateRange,
   workoutDate,
   workoutTypeLabel,
+  cn,
 } from "@/lib/utils";
 
 type Workout = {
@@ -18,6 +22,7 @@ type Workout = {
   description: string | null;
   distanceMiles: number | null;
   durationMin: number | null;
+  targetPace?: string | null;
   completed: boolean;
 };
 
@@ -39,11 +44,49 @@ type Plan = {
   weeks: Week[];
 };
 
+type SelectedWorkout = {
+  workout: Workout;
+  weekNumber: number;
+  weekFocus: string | null;
+  date: Date;
+};
+
 function weekMileage(workouts: Workout[]): number {
   return workouts.reduce((sum, wo) => sum + (wo.distanceMiles ?? 0), 0);
 }
 
+function isSameLocalDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+function localToday(): Date {
+  const n = new Date();
+  return new Date(n.getFullYear(), n.getMonth(), n.getDate(), 12, 0, 0);
+}
+
 export function PlanView({ plan }: { plan: Plan | null }) {
+  const [selected, setSelected] = useState<SelectedWorkout | null>(null);
+  const titleId = useId();
+
+  useEffect(() => {
+    if (!selected) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSelected(null);
+    };
+    window.addEventListener("keydown", onKey);
+    // Prevent background scroll while modal open
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [selected]);
+
   if (!plan) {
     return (
       <div className="rounded-2xl border border-dashed border-card-border bg-card/40 px-6 py-14 text-center">
@@ -63,6 +106,7 @@ export function PlanView({ plan }: { plan: Plan | null }) {
     );
   }
 
+  const today = localToday();
   const planStartLabel = formatShortDate(
     weekDateRange(plan.startDate, 1).start,
   );
@@ -78,13 +122,15 @@ export function PlanView({ plan }: { plan: Plan | null }) {
         {plan.notes && (
           <p className="mt-3 text-sm text-muted">{plan.notes}</p>
         )}
+        <p className="mt-3 text-[11px] text-muted">
+          Tap a day for full workout details. Today is highlighted.
+        </p>
       </div>
 
       {plan.weeks.map((week) => {
         const { start, end } = weekDateRange(plan.startDate, week.weekNumber);
         const totalMiles = weekMileage(week.workouts);
-        const rounded =
-          Math.round(totalMiles * 10) / 10;
+        const rounded = Math.round(totalMiles * 10) / 10;
 
         return (
           <section key={week.id} className="space-y-3">
@@ -116,10 +162,25 @@ export function PlanView({ plan }: { plan: Plan | null }) {
                   week.weekNumber,
                   wo.dayOfWeek,
                 );
+                const isToday = isSameLocalDay(date, today);
                 return (
-                  <article
+                  <button
                     key={wo.id}
-                    className="rounded-xl border border-card-border bg-card/60 p-3"
+                    type="button"
+                    onClick={() =>
+                      setSelected({
+                        workout: wo,
+                        weekNumber: week.weekNumber,
+                        weekFocus: week.focus,
+                        date,
+                      })
+                    }
+                    className={cn(
+                      "rounded-xl border p-3 text-left transition active:scale-[0.99]",
+                      isToday
+                        ? "border-accent bg-accent-soft ring-2 ring-accent/50 shadow-[0_0_0_1px_rgba(61,214,140,0.25)]"
+                        : "border-card-border bg-card/60 hover:border-accent/40",
+                    )}
                   >
                     <div className="mb-1 flex items-center justify-between gap-2">
                       <span className="text-xs font-medium text-muted">
@@ -127,6 +188,11 @@ export function PlanView({ plan }: { plan: Plan | null }) {
                         <span className="text-muted/80">
                           {formatShortDate(date)}
                         </span>
+                        {isToday && (
+                          <span className="ml-1.5 rounded-full bg-accent px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-black">
+                            Today
+                          </span>
+                        )}
                       </span>
                       <span className="rounded-full bg-white/5 px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted">
                         {workoutTypeLabel(wo.type)}
@@ -143,19 +209,126 @@ export function PlanView({ plan }: { plan: Plan | null }) {
                         " · "}
                       {wo.durationMin != null &&
                         formatDuration(wo.durationMin)}
+                      {wo.targetPace && (
+                        <span className="block text-accent/90">
+                          {wo.targetPace}
+                        </span>
+                      )}
                     </div>
                     {wo.description && (
-                      <p className="mt-2 line-clamp-3 text-xs text-muted/90">
+                      <p className="mt-2 line-clamp-2 text-xs text-muted/90">
                         {wo.description}
                       </p>
                     )}
-                  </article>
+                    <p className="mt-2 text-[10px] font-medium text-accent/80">
+                      Tap for full details
+                    </p>
+                  </button>
                 );
               })}
             </div>
           </section>
         );
       })}
+
+      {selected && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 p-0 sm:items-center sm:p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={titleId}
+          onClick={() => setSelected(null)}
+        >
+          <div
+            className="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-t-2xl border border-card-border bg-card p-5 shadow-2xl sm:rounded-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted">
+                  Week {selected.weekNumber}
+                  {selected.weekFocus ? ` · ${selected.weekFocus}` : ""}
+                </p>
+                <h2
+                  id={titleId}
+                  className="mt-1 text-lg font-bold leading-snug"
+                >
+                  {selected.workout.title}
+                </h2>
+                <p className="mt-1 text-sm text-muted">
+                  {dayName(selected.workout.dayOfWeek)},{" "}
+                  {formatShortDate(selected.date)}
+                  {isSameLocalDay(selected.date, today) && (
+                    <span className="ml-2 rounded-full bg-accent px-2 py-0.5 text-[10px] font-bold uppercase text-black">
+                      Today
+                    </span>
+                  )}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelected(null)}
+                className="min-h-10 shrink-0 rounded-lg px-3 text-sm text-muted hover:text-foreground"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mb-4 flex flex-wrap gap-2">
+              <span className="rounded-full bg-accent-soft px-3 py-1 text-xs font-medium text-accent">
+                {workoutTypeLabel(selected.workout.type)}
+              </span>
+              {selected.workout.completed && (
+                <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-muted">
+                  Marked complete
+                </span>
+              )}
+            </div>
+
+            <dl className="space-y-3 text-sm">
+              {selected.workout.distanceMiles != null && (
+                <div>
+                  <dt className="text-xs text-muted">Distance</dt>
+                  <dd className="font-medium">
+                    {formatMiles(selected.workout.distanceMiles)}
+                  </dd>
+                </div>
+              )}
+              {selected.workout.durationMin != null && (
+                <div>
+                  <dt className="text-xs text-muted">Duration</dt>
+                  <dd className="font-medium">
+                    {formatDuration(selected.workout.durationMin)}
+                  </dd>
+                </div>
+              )}
+              {selected.workout.targetPace && (
+                <div>
+                  <dt className="text-xs text-muted">Suggested pace</dt>
+                  <dd className="font-medium text-accent">
+                    {selected.workout.targetPace}
+                  </dd>
+                </div>
+              )}
+              <div>
+                <dt className="text-xs text-muted">Details</dt>
+                <dd className="mt-1 whitespace-pre-wrap leading-relaxed text-foreground/90">
+                  {selected.workout.description?.trim() ||
+                    "No extra notes for this day. Ask your coach if you want more structure."}
+                </dd>
+              </div>
+            </dl>
+
+            <button
+              type="button"
+              onClick={() => setSelected(null)}
+              className="mt-6 flex min-h-12 w-full items-center justify-center rounded-xl bg-accent text-sm font-semibold text-black"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

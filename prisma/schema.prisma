@@ -117,6 +117,8 @@ model PlanWorkout {
   description   String?
   distanceMiles Float?
   durationMin   Float?
+  /// Suggested pace, e.g. "9:30/mi", "7:45–8:00/mi", "easy conversational"
+  targetPace    String?
   completed     Boolean   @default(false)
   googleEventId String? // set after successful Calendar sync (idempotency)
 

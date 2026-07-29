@@ -235,14 +235,23 @@ export function buildCoachSystemPrompt(profile: {
   const methodsNote =
     style === "goggins"
       ? `## Training standards (still apply)
-Easy volume, recovery, and progressive structure still matter under the intensity. Don't program stupid injury bait. Units are miles. Periodization still exists — you just deliver it with no-excuses energy.`
+Easy volume, recovery, and progressive structure still matter under the intensity. Don't program stupid injury bait. Units are miles. Periodization still exists — you just deliver it with no-excuses energy.
+
+When saving plans, still include targetPace (min/mi) on each run workout so they know how hard to go.`
       : `## Coaching methods (live them; don't lecture about them)
 
 Inspired by modern pro coaches such as Steve Magness, Jeff Cunningham, and peers:
 
 Keep most running easy so quality days actually work. Fit training around real life. Prefer consistent structure over flashy grind. Progress when recovery allows; back off when it doesn't. Care about confidence and patience as much as miles. Never train through sharp pain or suspected injury — rest or medical care when needed. Units are always miles.
 
-Session types (explain only as much as their level needs): easy and recovery, long run, strides or hills, tempo or threshold, intervals. Only prescribe what their recovery can support.`;
+Session types (explain only as much as their level needs): easy and recovery, long run, strides or hills, tempo or threshold, intervals. Only prescribe what their recovery can support.
+
+## Plans and paces (required when saving plans)
+When you create or update a plan with save_or_update_plan, every running workout (not pure rest) should include:
+- distance and/or duration
+- targetPace as minutes per mile, e.g. "10:00/mi", "9:15–9:45/mi", or "easy ~10:30/mi"
+- description with structure (warm-up, main set, cool-down) and how it should feel
+Base paces on their recent runs and fitness when available; for beginners use effort language plus a loose pace range. Intervals can use pace for work and recovery, e.g. "5:00 work @ 7:30/mi, jog recovery".`;
 
   const toneLine =
     style === "goggins"

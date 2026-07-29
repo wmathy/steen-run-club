@@ -103,6 +103,7 @@ export function createCoachTools(userId: string) {
                 description: wo.description,
                 distanceMiles: wo.distanceMiles,
                 durationMin: wo.durationMin,
+                targetPace: wo.targetPace,
                 completed: wo.completed,
               })),
             })),
@@ -183,7 +184,13 @@ export function createCoachTools(userId: string) {
                     date: isoDateSchema.optional(),
                     type: workoutTypeSchema,
                     title: z.string().min(1).max(200),
-                    description: z.string().max(2000).optional(),
+                    description: z
+                      .string()
+                      .max(2000)
+                      .optional()
+                      .describe(
+                        "Full workout detail: structure, cues, warm-up/cool-down. Include effort feel.",
+                      ),
                     distanceMiles: z
                       .number()
                       .finite()
@@ -197,6 +204,13 @@ export function createCoachTools(userId: string) {
                       .positive()
                       .max(24 * 60)
                       .optional(),
+                    targetPace: z
+                      .string()
+                      .max(80)
+                      .optional()
+                      .describe(
+                        'Suggested pace as min/mi, e.g. "9:30/mi", "7:45–8:00/mi", or "easy conversational (~10:00/mi)". Required for running workouts (not rest).',
+                      ),
                   }),
                 )
                 .max(MAX_WORKOUTS_PER_WEEK),
@@ -256,6 +270,7 @@ export function createCoachTools(userId: string) {
                       description: wo.description ?? null,
                       distanceMiles: wo.distanceMiles ?? null,
                       durationMin: wo.durationMin ?? null,
+                      targetPace: wo.targetPace?.trim() || null,
                     })),
                   },
                 })),
