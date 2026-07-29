@@ -18,15 +18,45 @@ export default async function PlanPage() {
     },
   });
 
+  // Plain JSON for the client component (avoids Date/Prisma serialization issues)
+  const planForClient = plan
+    ? {
+        id: plan.id,
+        title: plan.title,
+        goal: plan.goal,
+        startDate: plan.startDate.toISOString(),
+        endDate: plan.endDate?.toISOString() ?? null,
+        notes: plan.notes,
+        weeks: plan.weeks.map((w) => ({
+          id: w.id,
+          weekNumber: w.weekNumber,
+          focus: w.focus,
+          notes: w.notes,
+          workouts: w.workouts.map((wo) => ({
+            id: wo.id,
+            dayOfWeek: wo.dayOfWeek,
+            type: wo.type,
+            title: wo.title,
+            description: wo.description,
+            distanceMiles: wo.distanceMiles,
+            durationMin: wo.durationMin,
+            targetPace: wo.targetPace,
+            completed: wo.completed,
+          })),
+        })),
+      }
+    : null;
+
   return (
     <div className="mobile-page mx-auto w-full max-w-6xl space-y-4 p-3 sm:p-4 md:p-8">
       <div>
         <h1 className="text-xl font-bold">Training plan</h1>
         <p className="mt-1 text-sm text-muted">
-          Structured weeks and workouts saved by your coach.
+          Structured weeks and workouts saved by your coach. Tap a day for full
+          details.
         </p>
       </div>
-      <PlanView plan={plan} />
+      <PlanView plan={planForClient} />
     </div>
   );
 }

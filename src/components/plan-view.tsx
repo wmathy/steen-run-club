@@ -38,6 +38,7 @@ type Plan = {
   id: string;
   title: string;
   goal: string | null;
+  /** ISO string from server (preferred) or Date */
   startDate: Date | string;
   endDate: Date | string | null;
   notes: string | null;
