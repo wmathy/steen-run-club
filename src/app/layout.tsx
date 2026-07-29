@@ -56,7 +56,6 @@ export default function RootLayout({
             __html: `
               :root{--background:#0b0f14;--foreground:#e8eef6;--card:#121820;--card-border:#1e2a38;--muted:#8b9bb0;--accent:#3dd68c}
               html,body{background:#0b0f14;color:#e8eef6;margin:0;min-height:100%}
-              a{color:#3dd68c;text-decoration:none}
               *{box-sizing:border-box}
             `,
           }}

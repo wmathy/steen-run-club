@@ -88,6 +88,7 @@ export default async function DashboardPage() {
         <Link
           href="/chat"
           className="flex min-h-12 w-full items-center justify-center rounded-xl bg-accent px-4 py-3 text-sm font-semibold text-black shadow-lg shadow-accent/10 sm:w-auto sm:min-h-0 sm:py-2.5"
+          style={{ color: "#0b0f14" }}
         >
           Talk to coach
         </Link>
