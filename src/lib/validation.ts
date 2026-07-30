@@ -79,6 +79,7 @@ export const coachProfileUpdateSchema = z.object({
   fitnessLevel: z.string().max(PROFILE_FIELD_MAX).optional(),
   schedule: z.string().max(PROFILE_FIELD_MAX).optional(),
   coachingStyle: coachingStyleSchema.optional(),
+  includeStrength: z.boolean().optional(),
 });
 
 export const MAX_PLAN_WEEKS = 26;

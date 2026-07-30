@@ -201,6 +201,34 @@ Match their language. If unsure of level, start a bit more explanatory, then get
 `.trim();
 }
 
+function strengthTrainingBlock(includeStrength: boolean): string {
+  if (!includeStrength) {
+    return `## Strength training
+The athlete has **not** opted into supplemental weight lifting in Settings (includeStrength = false).
+Do **not** add strength/lift days to the plan unless they explicitly ask in chat. If they ask, you may add them and suggest they also turn on "Weight lifting" in Settings.`;
+  }
+
+  return `## Strength training (ENABLED — required in plans)
+The athlete wants **weight lifting to supplement running** (includeStrength = true).
+
+### How to program it
+- Add **separate** plan workouts with type **strength** — never merge lifts into a run's description.
+- Same calendar day may have **both** a run workout and a strength workout (two entries, same dayOfWeek). Prefer strength on easy/recovery run days or non-quality days; avoid heavy lower body the day before a long run or hard session when possible.
+- Target **2–3 strength sessions per week** (not every day). Skip or lighten near races if needed.
+- Each strength session: **30–45 minutes** total (set durationMin to 30–45). Title clearly (e.g. "Strength A — posterior chain").
+- Focus on **running-centric** work: deadlift variations, squats, lunges/split squats, step-ups, hip hinges, single-leg work, calf raises, core (planks, dead bugs, anti-rotation), glute bridges/hip thrusts. Light upper body optional for balance.
+- In **description**, list every exercise with **sets × reps** (and rest if useful), e.g.:
+  Warm-up: 5 min easy movement
+  1) Goblet squat — 3×8–10
+  2) Romanian deadlift — 3×8
+  3) Walking lunges — 3×10/leg
+  4) Single-leg glute bridge — 3×10/side
+  5) Plank — 3×30–45s
+  Cool-down: light stretch
+- Scale load/complexity to fitness and injuries. Prefer controlled form over max weight. No ego lifting.
+- Do not put distanceMiles or targetPace on strength workouts.`;
+}
+
 export function buildCoachSystemPrompt(
   profile: {
     summary?: string | null;
@@ -211,6 +239,7 @@ export function buildCoachSystemPrompt(
     fitnessLevel?: string | null;
     schedule?: string | null;
     coachingStyle?: string | null;
+    includeStrength?: boolean | null;
   } | null,
   options?: {
     /** IANA timezone from the athlete's device, e.g. America/New_York */
@@ -226,6 +255,7 @@ export function buildCoachSystemPrompt(
   const style = normalizeCoachingStyle(profile?.coachingStyle);
   const fitnessLevel = clip(profile?.fitnessLevel, "Unknown");
   const clock = getCoachClock(options?.timeZone);
+  const includeStrength = Boolean(profile?.includeStrength);
 
   const profileBlock = profile
     ? `
@@ -238,6 +268,7 @@ export function buildCoachSystemPrompt(
 - Weekly schedule: ${clip(profile.schedule, "Unknown")}
 - Race calendar: ${clip(profile.raceCalendar, "None recorded")}
 - Preferred coaching style: **${style}**
+- Weight lifting to supplement running: **${includeStrength ? "ON — program separate strength sessions" : "OFF"}**
 `
     : "No coach profile yet — start with a friendly beginner-friendly chat.";
 
@@ -256,11 +287,13 @@ Keep most running easy so quality days actually work. Fit training around real l
 Session types (explain only as much as their level needs): easy and recovery, long run, strides or hills, tempo or threshold, intervals. Only prescribe what their recovery can support.
 
 ## Plans and paces (required when saving plans)
-When you create or update a plan with save_or_update_plan, every running workout (not pure rest) should include:
+When you create or update a plan with save_or_update_plan, every running workout (not pure rest or strength) should include:
 - distance and/or duration
 - targetPace as minutes per mile, e.g. "10:00/mi", "9:15–9:45/mi", or "easy ~10:30/mi"
 - description with structure (warm-up, main set, cool-down) and how it should feel
-Base paces on their recent runs and fitness when available; for beginners use effort language plus a loose pace range. Intervals can use pace for work and recovery, e.g. "5:00 work @ 7:30/mi, jog recovery".`;
+Base paces on their recent runs and fitness when available; for beginners use effort language plus a loose pace range. Intervals can use pace for work and recovery, e.g. "5:00 work @ 7:30/mi, jog recovery".
+
+Strength workouts (type strength): separate entries, durationMin 30–45, description with sets×reps for each lift — see Strength training section.`;
 
   const toneLine =
     style === "goggins"
@@ -283,8 +316,10 @@ ${experienceAdaptationBlock(fitnessLevel, style)}
 
 ${methodsNote}
 
+${strengthTrainingBlock(includeStrength)}
+
 ## Data & tools (silent)
-Use get_recent_runs and get_current_plan when useful — never mention doing so. Treat logged runs as ground truth. save_run / save_or_update_plan / update_coach_profile as needed, including fitness level. Don't change coachingStyle unless they ask.
+Use get_recent_runs and get_current_plan when useful — never mention doing so. Treat logged runs as ground truth. save_run / save_or_update_plan / update_coach_profile as needed, including fitness level. Don't change coachingStyle or includeStrength unless they ask (includeStrength is set in Settings).
 
 ${toneLine}`;
 }

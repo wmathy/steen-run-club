@@ -18,6 +18,7 @@ type Profile = {
   fitnessLevel: string;
   schedule: string;
   coachingStyle?: string | null;
+  includeStrength?: boolean | null;
 } | null;
 
 /** Stable date string (avoids Node vs browser locale mismatches). */
@@ -83,6 +84,10 @@ export function SettingsClient({
     normalizeCoachingStyle(profile?.coachingStyle),
   );
   const [savingStyle, setSavingStyle] = useState(false);
+  const [includeStrength, setIncludeStrength] = useState(
+    Boolean(profile?.includeStrength),
+  );
+  const [savingStrength, setSavingStrength] = useState(false);
   const [pwForm, setPwForm] = useState({
     currentPassword: "",
     newPassword: "",
@@ -108,6 +113,32 @@ export function SettingsClient({
       router.refresh();
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function saveIncludeStrength(next: boolean) {
+    setIncludeStrength(next);
+    setSavingStrength(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ includeStrength: next }),
+      });
+      if (!res.ok) {
+        setIncludeStrength(!next);
+        setMessage("Failed to save strength preference");
+        return;
+      }
+      setMessage(
+        next
+          ? "Strength training on — ask the coach to update your plan with lift sessions."
+          : "Strength training off — new plans will focus on running only.",
+      );
+      router.refresh();
+    } finally {
+      setSavingStrength(false);
     }
   }
 
@@ -311,6 +342,62 @@ export function SettingsClient({
           >
             Connect Strava
           </button>
+        )}
+      </section>
+
+      <section className="rounded-2xl border border-card-border bg-card/80 p-5">
+        <h2 className="mb-1 text-sm font-semibold">
+          Weight lifting (supplement running)
+        </h2>
+        <p className="mb-4 text-xs text-muted">
+          When on, the coach programs separate strength sessions (not mixed into
+          runs) — about 30–45 minutes, 2–3 days/week, with sets and reps.
+          Running-focused lifts: squats, deadlifts, lunges, single-leg work, and
+          core.
+        </p>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={includeStrength}
+          disabled={savingStrength}
+          onClick={() => saveIncludeStrength(!includeStrength)}
+          className={cn(
+            "flex min-h-14 w-full items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left transition active:scale-[0.99]",
+            includeStrength
+              ? "border-accent bg-accent-soft ring-1 ring-accent/40"
+              : "border-card-border bg-input-bg/40 hover:border-accent/30",
+            savingStrength && "opacity-70",
+          )}
+        >
+          <div className="min-w-0">
+            <div className="text-sm font-semibold">
+              Include weight lifting in my plan
+            </div>
+            <p className="mt-1 text-[11px] leading-snug text-muted">
+              {includeStrength
+                ? "On — coach will add separate strength workouts with sets × reps"
+                : "Off — running-only plan structure"}
+            </p>
+          </div>
+          <span
+            className={cn(
+              "relative h-7 w-12 shrink-0 rounded-full transition-colors",
+              includeStrength ? "bg-accent" : "bg-white/15",
+            )}
+          >
+            <span
+              className={cn(
+                "absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform",
+                includeStrength ? "left-5" : "left-0.5",
+              )}
+            />
+          </span>
+        </button>
+        {includeStrength && (
+          <p className="mt-3 text-[11px] text-muted">
+            Tip: open Coach chat and ask to rebuild or update your plan so lift
+            days appear on the Plan tab.
+          </p>
         )}
       </section>
 

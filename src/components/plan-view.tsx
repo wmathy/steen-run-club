@@ -314,7 +314,14 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
                           </span>
                         )}
                       </span>
-                      <span className="rounded-full bg-white/5 px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted">
+                      <span
+                        className={cn(
+                          "rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide",
+                          wo.type === "strength"
+                            ? "bg-accent-soft text-accent"
+                            : "bg-white/5 text-muted",
+                        )}
+                      >
                         {workoutTypeLabel(wo.type)}
                       </span>
                     </div>
@@ -456,8 +463,9 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
                   How did this day go?
                 </p>
                 <p className="text-xs text-muted">
-                  Check one option. We&apos;ll match your Strava/run log for this
-                  date and your coach will reply in the Coach tab.
+                  {selected.workout.type === "strength"
+                    ? "Check one option. Your coach will reply in the Coach tab about this lift session."
+                    : "Check one option. We'll match your Strava/run log for this date and your coach will reply in the Coach tab."}
                 </p>
 
                 <label
@@ -482,7 +490,9 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
                   />
                   <span>
                     <span className="block text-sm font-semibold">
-                      Completed run as planned
+                      {selected.workout.type === "strength"
+                        ? "Completed workout as planned"
+                        : "Completed run as planned"}
                     </span>
                     <span className="mt-0.5 block text-xs text-muted">
                       I did this workout as prescribed
@@ -512,10 +522,14 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
                   />
                   <span>
                     <span className="block text-sm font-semibold">
-                      Modified today&apos;s run
+                      {selected.workout.type === "strength"
+                        ? "Modified today's workout"
+                        : "Modified today's run"}
                     </span>
                     <span className="mt-0.5 block text-xs text-muted">
-                      I changed distance, pace, type, or skipped structure
+                      {selected.workout.type === "strength"
+                        ? "I changed exercises, sets, reps, or load"
+                        : "I changed distance, pace, type, or skipped structure"}
                     </span>
                   </span>
                 </label>

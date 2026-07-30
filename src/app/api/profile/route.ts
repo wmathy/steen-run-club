@@ -43,6 +43,7 @@ export async function PATCH(req: Request) {
         fitnessLevel: data.fitnessLevel ?? "",
         schedule: data.schedule ?? "",
         coachingStyle: data.coachingStyle ?? "concise",
+        includeStrength: data.includeStrength ?? false,
       },
       update: data,
     });

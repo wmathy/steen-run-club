@@ -212,10 +212,10 @@ export function createCoachTools(
                     title: z.string().min(1).max(200),
                     description: z
                       .string()
-                      .max(2000)
+                      .max(4000)
                       .optional()
                       .describe(
-                        "Full workout detail: structure, cues, warm-up/cool-down. Include effort feel.",
+                        "Full workout detail. Runs: structure, cues, warm-up/cool-down, effort feel. Strength: list each exercise with sets×reps (e.g. Romanian deadlift 3×8), warm-up/cool-down; session 30–45 min.",
                       ),
                     distanceMiles: z
                       .number()
@@ -223,19 +223,24 @@ export function createCoachTools(
                       .positive()
                       .max(300)
                       .optional()
-                      .describe("Distance in miles"),
+                      .describe(
+                        "Distance in miles (running only; omit for strength/rest)",
+                      ),
                     durationMin: z
                       .number()
                       .finite()
                       .positive()
                       .max(24 * 60)
-                      .optional(),
+                      .optional()
+                      .describe(
+                        "Duration in minutes. Strength sessions should be 30–45.",
+                      ),
                     targetPace: z
                       .string()
                       .max(80)
                       .optional()
                       .describe(
-                        'Suggested pace as min/mi, e.g. "9:30/mi", "7:45–8:00/mi", or "easy conversational (~10:00/mi)". Required for running workouts (not rest).',
+                        'Suggested pace as min/mi for runs, e.g. "9:30/mi". Omit for strength/rest.',
                       ),
                   }),
                 )
@@ -325,7 +330,7 @@ export function createCoachTools(
 
     update_coach_profile: tool({
       description:
-        "Update the athlete's long-term coach profile (goals, injuries, preferences, etc.). Merge new facts; do not wipe unknown fields unless intentionally clearing.",
+        "Update the athlete's long-term coach profile (goals, injuries, preferences, etc.). Merge new facts; do not wipe unknown fields unless intentionally clearing. includeStrength is normally set in Settings — only change if they clearly ask.",
       inputSchema: z.object({
         summary: z.string().max(PROFILE_MAX).optional(),
         goals: z.string().max(PROFILE_MAX).optional(),
@@ -334,9 +339,15 @@ export function createCoachTools(
         raceCalendar: z.string().max(PROFILE_MAX).optional(),
         fitnessLevel: z.string().max(PROFILE_MAX).optional(),
         schedule: z.string().max(PROFILE_MAX).optional(),
+        includeStrength: z
+          .boolean()
+          .optional()
+          .describe(
+            "If true, program separate running-focused strength sessions in plans",
+          ),
       }),
       execute: async (input) => {
-        const data: Record<string, string> = {};
+        const data: Record<string, string | boolean> = {};
         for (const key of [
           "summary",
           "goals",
@@ -348,18 +359,22 @@ export function createCoachTools(
         ] as const) {
           if (input[key] !== undefined) data[key] = input[key]!;
         }
+        if (input.includeStrength !== undefined) {
+          data.includeStrength = input.includeStrength;
+        }
 
         const profile = await prisma.coachProfile.upsert({
           where: { userId },
           create: {
             userId,
-            summary: data.summary ?? "",
-            goals: data.goals ?? "",
-            injuries: data.injuries ?? "",
-            preferences: data.preferences ?? "",
-            raceCalendar: data.raceCalendar ?? "",
-            fitnessLevel: data.fitnessLevel ?? "",
-            schedule: data.schedule ?? "",
+            summary: (data.summary as string) ?? "",
+            goals: (data.goals as string) ?? "",
+            injuries: (data.injuries as string) ?? "",
+            preferences: (data.preferences as string) ?? "",
+            raceCalendar: (data.raceCalendar as string) ?? "",
+            fitnessLevel: (data.fitnessLevel as string) ?? "",
+            schedule: (data.schedule as string) ?? "",
+            includeStrength: Boolean(data.includeStrength),
           },
           update: data,
         });
@@ -375,6 +390,7 @@ export function createCoachTools(
             raceCalendar: profile.raceCalendar,
             fitnessLevel: profile.fitnessLevel,
             schedule: profile.schedule,
+            includeStrength: profile.includeStrength,
           },
         };
       },
