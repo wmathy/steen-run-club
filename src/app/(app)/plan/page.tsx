@@ -42,6 +42,9 @@ export default async function PlanPage() {
             durationMin: wo.durationMin,
             targetPace: wo.targetPace,
             completed: wo.completed,
+            completionStatus:
+              (wo.completionStatus as "as_planned" | "modified" | null) ??
+              null,
           })),
         })),
       }
@@ -52,8 +55,9 @@ export default async function PlanPage() {
       <div>
         <h1 className="text-xl font-bold">Training plan</h1>
         <p className="mt-1 text-sm text-muted">
-          Structured weeks and workouts saved by your coach. Tap a day for full
-          details.
+          Structured weeks and workouts saved by your coach. Tap a day to mark
+          complete as planned or modified — the coach will review your run data
+          and reply in chat.
         </p>
       </div>
       <PlanView plan={planForClient} />

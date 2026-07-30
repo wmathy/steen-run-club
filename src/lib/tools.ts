@@ -130,6 +130,7 @@ export function createCoachTools(
                 durationMin: wo.durationMin,
                 targetPace: wo.targetPace,
                 completed: wo.completed,
+                completionStatus: wo.completionStatus,
               })),
             })),
           },

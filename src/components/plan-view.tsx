@@ -14,6 +14,8 @@ import {
   cn,
 } from "@/lib/utils";
 
+export type CompletionStatus = "as_planned" | "modified" | null;
+
 type Workout = {
   id: string;
   dayOfWeek: number;
@@ -24,6 +26,7 @@ type Workout = {
   durationMin: number | null;
   targetPace?: string | null;
   completed: boolean;
+  completionStatus?: CompletionStatus;
 };
 
 type Week = {
@@ -69,9 +72,32 @@ function localToday(): Date {
   return new Date(n.getFullYear(), n.getMonth(), n.getDate(), 12, 0, 0);
 }
 
-export function PlanView({ plan }: { plan: Plan | null }) {
+function completionLabel(status: CompletionStatus | undefined): string | null {
+  if (status === "as_planned") return "As planned";
+  if (status === "modified") return "Modified";
+  return null;
+}
+
+function deviceTimeZone(): string | undefined {
+  if (typeof Intl === "undefined") return undefined;
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return undefined;
+  }
+}
+
+export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
+  const [plan, setPlan] = useState(initialPlan);
   const [selected, setSelected] = useState<SelectedWorkout | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const titleId = useId();
+
+  useEffect(() => {
+    setPlan(initialPlan);
+  }, [initialPlan]);
 
   useEffect(() => {
     if (!selected) return;
@@ -79,7 +105,6 @@ export function PlanView({ plan }: { plan: Plan | null }) {
       if (e.key === "Escape") setSelected(null);
     };
     window.addEventListener("keydown", onKey);
-    // Prevent background scroll while modal open
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
@@ -87,6 +112,97 @@ export function PlanView({ plan }: { plan: Plan | null }) {
       document.body.style.overflow = prev;
     };
   }, [selected]);
+
+  function updateWorkoutLocal(
+    workoutId: string,
+    patch: { completed: boolean; completionStatus: CompletionStatus },
+  ) {
+    setPlan((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        weeks: prev.weeks.map((w) => ({
+          ...w,
+          workouts: w.workouts.map((wo) =>
+            wo.id === workoutId ? { ...wo, ...patch } : wo,
+          ),
+        })),
+      };
+    });
+    setSelected((prev) =>
+      prev && prev.workout.id === workoutId
+        ? { ...prev, workout: { ...prev.workout, ...patch } }
+        : prev,
+    );
+  }
+
+  async function setCompletion(
+    workout: Workout,
+    next: CompletionStatus,
+  ) {
+    // Toggle off if tapping the same option again
+    const status: CompletionStatus =
+      workout.completionStatus === next ? null : next;
+
+    setSavingId(workout.id);
+    setErrorMsg(null);
+    setStatusMsg(null);
+
+    // Optimistic UI
+    updateWorkoutLocal(workout.id, {
+      completed: status !== null,
+      completionStatus: status,
+    });
+
+    try {
+      const res = await fetch(`/api/plan/workouts/${workout.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status,
+          timeZone: deviceTimeZone(),
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        coachNotified?: boolean;
+        workout?: {
+          completed: boolean;
+          completionStatus: CompletionStatus;
+        };
+      };
+      if (!res.ok) {
+        // Revert
+        updateWorkoutLocal(workout.id, {
+          completed: workout.completed,
+          completionStatus: workout.completionStatus ?? null,
+        });
+        setErrorMsg(data.error || "Could not update workout");
+        return;
+      }
+      if (data.workout) {
+        updateWorkoutLocal(workout.id, {
+          completed: data.workout.completed,
+          completionStatus: data.workout.completionStatus ?? null,
+        });
+      }
+      if (data.coachNotified) {
+        setStatusMsg(
+          "Coach is reviewing this day — check the Coach tab for a reply.",
+        );
+      } else if (status === null) {
+        setStatusMsg("Cleared completion mark.");
+      }
+    } catch {
+      updateWorkoutLocal(workout.id, {
+        completed: workout.completed,
+        completionStatus: workout.completionStatus ?? null,
+      });
+      setErrorMsg("Network error — try again.");
+    } finally {
+      setSavingId(null);
+    }
+  }
 
   if (!plan) {
     return (
@@ -124,7 +240,9 @@ export function PlanView({ plan }: { plan: Plan | null }) {
           <p className="mt-3 text-sm text-muted">{plan.notes}</p>
         )}
         <p className="mt-3 text-[11px] text-muted">
-          Tap a day for full workout details. Today is highlighted.
+          Tap a day for full workout details. Mark complete as planned or
+          modified — your coach will review Strava/run data and reply in Coach
+          chat.
         </p>
       </div>
 
@@ -164,6 +282,7 @@ export function PlanView({ plan }: { plan: Plan | null }) {
                   wo.dayOfWeek,
                 );
                 const isToday = isSameLocalDay(date, today);
+                const mark = completionLabel(wo.completionStatus);
                 return (
                   <button
                     key={wo.id}
@@ -221,9 +340,15 @@ export function PlanView({ plan }: { plan: Plan | null }) {
                         {wo.description}
                       </p>
                     )}
-                    <p className="mt-2 text-[10px] font-medium text-accent/80">
-                      Tap for full details
-                    </p>
+                    {mark ? (
+                      <p className="mt-2 text-[10px] font-semibold text-accent">
+                        ✓ {mark}
+                      </p>
+                    ) : (
+                      <p className="mt-2 text-[10px] font-medium text-accent/80">
+                        Tap for details &amp; complete
+                      </p>
+                    )}
                   </button>
                 );
               })}
@@ -279,9 +404,14 @@ export function PlanView({ plan }: { plan: Plan | null }) {
               <span className="rounded-full bg-accent-soft px-3 py-1 text-xs font-medium text-accent">
                 {workoutTypeLabel(selected.workout.type)}
               </span>
-              {selected.workout.completed && (
+              {selected.workout.completionStatus === "as_planned" && (
                 <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-muted">
-                  Marked complete
+                  Completed as planned
+                </span>
+              )}
+              {selected.workout.completionStatus === "modified" && (
+                <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-muted">
+                  Modified run
                 </span>
               )}
             </div>
@@ -320,13 +450,103 @@ export function PlanView({ plan }: { plan: Plan | null }) {
               </div>
             </dl>
 
-            <button
-              type="button"
-              onClick={() => setSelected(null)}
-              className="mt-6 flex min-h-12 w-full items-center justify-center rounded-xl bg-accent text-sm font-semibold text-black"
-            >
-              Done
-            </button>
+            {selected.workout.type !== "rest" && (
+              <div className="mt-6 space-y-3 rounded-xl border border-card-border bg-black/20 p-4">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted">
+                  How did this day go?
+                </p>
+                <p className="text-xs text-muted">
+                  Check one option. We&apos;ll match your Strava/run log for this
+                  date and your coach will reply in the Coach tab.
+                </p>
+
+                <label
+                  className={cn(
+                    "flex min-h-12 cursor-pointer items-start gap-3 rounded-lg border px-3 py-3 transition",
+                    selected.workout.completionStatus === "as_planned"
+                      ? "border-accent bg-accent-soft"
+                      : "border-card-border hover:border-accent/40",
+                    savingId === selected.workout.id && "opacity-60",
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 accent-[var(--accent,#3dd68c)]"
+                    checked={
+                      selected.workout.completionStatus === "as_planned"
+                    }
+                    disabled={savingId === selected.workout.id}
+                    onChange={() =>
+                      setCompletion(selected.workout, "as_planned")
+                    }
+                  />
+                  <span>
+                    <span className="block text-sm font-semibold">
+                      Completed run as planned
+                    </span>
+                    <span className="mt-0.5 block text-xs text-muted">
+                      I did this workout as prescribed
+                    </span>
+                  </span>
+                </label>
+
+                <label
+                  className={cn(
+                    "flex min-h-12 cursor-pointer items-start gap-3 rounded-lg border px-3 py-3 transition",
+                    selected.workout.completionStatus === "modified"
+                      ? "border-accent bg-accent-soft"
+                      : "border-card-border hover:border-accent/40",
+                    savingId === selected.workout.id && "opacity-60",
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 accent-[var(--accent,#3dd68c)]"
+                    checked={
+                      selected.workout.completionStatus === "modified"
+                    }
+                    disabled={savingId === selected.workout.id}
+                    onChange={() =>
+                      setCompletion(selected.workout, "modified")
+                    }
+                  />
+                  <span>
+                    <span className="block text-sm font-semibold">
+                      Modified today&apos;s run
+                    </span>
+                    <span className="mt-0.5 block text-xs text-muted">
+                      I changed distance, pace, type, or skipped structure
+                    </span>
+                  </span>
+                </label>
+
+                {statusMsg && (
+                  <p className="text-xs text-accent">{statusMsg}</p>
+                )}
+                {errorMsg && (
+                  <p className="text-xs text-danger">{errorMsg}</p>
+                )}
+                {savingId === selected.workout.id && (
+                  <p className="text-xs text-muted">Saving…</p>
+                )}
+              </div>
+            )}
+
+            <div className="mt-6 flex flex-col gap-2 sm:flex-row">
+              <Link
+                href="/chat"
+                className="flex min-h-12 flex-1 items-center justify-center rounded-xl border border-card-border text-sm font-semibold text-accent"
+              >
+                Open Coach
+              </Link>
+              <button
+                type="button"
+                onClick={() => setSelected(null)}
+                className="flex min-h-12 flex-1 items-center justify-center rounded-xl bg-accent text-sm font-semibold text-black"
+              >
+                Done
+              </button>
+            </div>
           </div>
         </div>
       )}

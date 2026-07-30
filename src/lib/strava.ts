@@ -351,7 +351,11 @@ async function listRecentActivities(
  */
 export async function syncStravaRunsForUser(
   userId: string,
-  options?: { fullDays?: number },
+  options?: {
+    fullDays?: number;
+    /** When true, import runs but skip automatic coach debrief (e.g. plan check-in will debrief). */
+    skipCoachDebrief?: boolean;
+  },
 ): Promise<{ created: number; updated: number; skipped: number }> {
   return withUserLock(`strava:${userId}`, async () => {
     const accessToken = await getValidStravaAccessToken(userId);
@@ -390,7 +394,9 @@ export async function syncStravaRunsForUser(
     if (createdRuns.length > 0) {
       await notifyCoachOfStravaRuns(userId, createdRuns);
       // One coach debrief for all newly created, recent runs (avoids chat flood)
-      schedulePostRunCoachFeedback(userId, createdRuns);
+      if (!options?.skipCoachDebrief) {
+        schedulePostRunCoachFeedback(userId, createdRuns);
+      }
     }
 
     return { created, updated, skipped };

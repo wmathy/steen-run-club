@@ -120,6 +120,8 @@ model PlanWorkout {
   /// Suggested pace, e.g. "9:30/mi", "7:45–8:00/mi", "easy conversational"
   targetPace    String?
   completed     Boolean   @default(false)
+  /// How the athlete marked the day: as_planned | modified | null
+  completionStatus String?
   googleEventId String? // set after successful Calendar sync (idempotency)
 
   week PlanWeek @relation(fields: [weekId], references: [id], onDelete: Cascade)
