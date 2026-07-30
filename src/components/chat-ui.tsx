@@ -76,13 +76,17 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
     resizeTextarea();
   }, [input]);
 
-  const transport = useMemo(
-    () =>
-      new DefaultChatTransport({
-        api: "/api/chat",
-      }),
-    [],
-  );
+  const transport = useMemo(() => {
+    const timeZone =
+      typeof Intl !== "undefined"
+        ? Intl.DateTimeFormat().resolvedOptions().timeZone
+        : undefined;
+    return new DefaultChatTransport({
+      api: "/api/chat",
+      // Send device timezone so the coach knows the athlete's real "today"
+      body: timeZone ? { timeZone } : {},
+    });
+  }, []);
 
   const { messages, sendMessage, status, error, setMessages } = useChat({
     messages: initialMessages,

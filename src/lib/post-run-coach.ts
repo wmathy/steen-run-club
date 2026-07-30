@@ -7,6 +7,7 @@ import { createCoachTools } from "@/lib/tools";
 import { appendChatTurn } from "@/lib/messages";
 import { withUserLock } from "@/lib/mutex";
 import { formatMiles } from "@/lib/utils";
+import { DEFAULT_COACH_TIME_ZONE } from "@/lib/clock";
 
 export type LoggedRunSummary = {
   id: string;
@@ -145,8 +146,10 @@ export async function generatePostRunCoachFeedback(
         planBlock = lines.join("\n");
       }
 
+      // Background jobs have no browser timezone; default to US Eastern.
+      const timeZone = DEFAULT_COACH_TIME_ZONE;
       const system =
-        buildCoachSystemPrompt(profile) +
+        buildCoachSystemPrompt(profile, { timeZone }) +
         `
 
 ## Post-run debrief mode (this message only)
@@ -181,7 +184,7 @@ Write your coach message now. Adjust the plan with tools only if trends justify 
         model: xai.chat("grok-4.5"),
         system,
         prompt: userPrompt,
-        tools: createCoachTools(userId),
+        tools: createCoachTools(userId, { timeZone }),
         stopWhen: stepCountIs(8),
       });
 

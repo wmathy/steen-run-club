@@ -124,6 +124,8 @@ export async function POST(req: Request) {
     const parsed = await parseJsonBody<{
       messages?: UIMessage[];
       message?: UIMessage;
+      /** IANA timezone from the athlete's browser, e.g. America/Chicago */
+      timeZone?: string;
     }>(req);
     if ("error" in parsed) {
       return Response.json({ error: "Invalid JSON body" }, { status: 400 });
@@ -147,8 +149,9 @@ export async function POST(req: Request) {
       where: { userId },
     });
 
-    const tools = createCoachTools(userId);
-    const system = buildCoachSystemPrompt(profile);
+    const timeZone = parsed.data.timeZone;
+    const tools = createCoachTools(userId, { timeZone });
+    const system = buildCoachSystemPrompt(profile, { timeZone });
 
     const result = streamText({
       model: xai.chat("grok-4.5"),

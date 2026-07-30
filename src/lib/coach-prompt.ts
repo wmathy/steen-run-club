@@ -1,3 +1,5 @@
+import { formatCoachClockBlock, getCoachClock } from "@/lib/clock";
+
 export const COACHING_STYLES = [
   "concise",
   "balanced",
@@ -199,16 +201,22 @@ Match their language. If unsure of level, start a bit more explanatory, then get
 `.trim();
 }
 
-export function buildCoachSystemPrompt(profile: {
-  summary?: string | null;
-  goals?: string | null;
-  injuries?: string | null;
-  preferences?: string | null;
-  raceCalendar?: string | null;
-  fitnessLevel?: string | null;
-  schedule?: string | null;
-  coachingStyle?: string | null;
-} | null): string {
+export function buildCoachSystemPrompt(
+  profile: {
+    summary?: string | null;
+    goals?: string | null;
+    injuries?: string | null;
+    preferences?: string | null;
+    raceCalendar?: string | null;
+    fitnessLevel?: string | null;
+    schedule?: string | null;
+    coachingStyle?: string | null;
+  } | null,
+  options?: {
+    /** IANA timezone from the athlete's device, e.g. America/New_York */
+    timeZone?: string | null;
+  },
+): string {
   const clip = (s: string | null | undefined, fallback: string) => {
     const v = (s || "").trim();
     if (!v) return fallback;
@@ -217,6 +225,7 @@ export function buildCoachSystemPrompt(profile: {
 
   const style = normalizeCoachingStyle(profile?.coachingStyle);
   const fitnessLevel = clip(profile?.fitnessLevel, "Unknown");
+  const clock = getCoachClock(options?.timeZone);
 
   const profileBlock = profile
     ? `
@@ -261,6 +270,8 @@ Base paces on their recent runs and fitness when available; for beginners use ef
         : "Tone: Like a coach who knows them: warm, honest. Celebrate consistency. Call out red flags clearly. Teacher for beginners, sharp partner for veterans — always in spoken English, not markup.";
 
   return `You are the Steen Run Club coach — a real coach in spirit texting one athlete.
+
+${formatCoachClockBlock(clock)}
 
 ${profileBlock}
 

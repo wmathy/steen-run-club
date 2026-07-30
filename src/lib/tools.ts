@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { getCoachClock } from "@/lib/clock";
 import {
   createEventsFromWorkouts,
   isGoogleConfigured,
@@ -17,8 +18,32 @@ import {
 const PROFILE_MAX = 4000;
 const MAX_INACTIVE_PLANS = 10;
 
-export function createCoachTools(userId: string) {
+export function createCoachTools(
+  userId: string,
+  options?: { timeZone?: string | null },
+) {
+  const clock = getCoachClock(options?.timeZone);
+
   return {
+    get_current_datetime: tool({
+      description:
+        "Return the athlete's authoritative current date and time. Call this if you are unsure what day it is before talking about today/tomorrow or logging a run.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const fresh = getCoachClock(options?.timeZone);
+        return {
+          isoDate: fresh.isoDate,
+          weekday: fresh.weekday,
+          planDayOfWeek: fresh.planDayOfWeek,
+          longDate: fresh.longDate,
+          localTime: fresh.localTime,
+          timeZone: fresh.timeZone,
+          yesterdayIso: fresh.yesterdayIso,
+          tomorrowIso: fresh.tomorrowIso,
+        };
+      },
+    }),
+
     get_recent_runs: tool({
       description:
         "Fetch the athlete's recent logged runs to inform coaching advice.",
@@ -117,7 +142,7 @@ export function createCoachTools(userId: string) {
         "Log a completed run for the athlete when they describe one in chat. Distance must be in miles.",
       inputSchema: z.object({
         date: isoDateSchema.describe(
-          "ISO date YYYY-MM-DD (use today if not specified)",
+          `ISO date YYYY-MM-DD. If the athlete means today or omits the date, use ${clock.isoDate} (${clock.weekday}). Do not invent other dates.`,
         ),
         distanceMiles: z
           .number()
