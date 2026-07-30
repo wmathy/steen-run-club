@@ -1,9 +1,8 @@
 import { randomUUID } from "crypto";
-import { generateText, stepCountIs } from "ai";
+import { generateText } from "ai";
 import { xai } from "@ai-sdk/xai";
 import { prisma } from "@/lib/prisma";
 import { buildCoachSystemPrompt } from "@/lib/coach-prompt";
-import { createCoachTools } from "@/lib/tools";
 import { appendChatTurn } from "@/lib/messages";
 import { withUserLock } from "@/lib/mutex";
 import { formatMiles, workoutDate } from "@/lib/utils";
@@ -200,12 +199,12 @@ ${runsBlock}
 
 Write your coach message now.`;
 
+      // No tools: all plan + run context is already in the prompt. Tools-only
+      // model turns can leave result.text empty and drop the coach message.
       const result = await generateText({
         model: xai.chat("grok-4.5"),
         system,
         prompt: userPrompt,
-        tools: createCoachTools(userId, { timeZone }),
-        stopWhen: stepCountIs(6),
       });
 
       const text = (result.text || "").trim();
@@ -221,19 +220,24 @@ Write your coach message now.`;
           parts: [{ type: "text", text }],
         },
       ]);
+
+      console.info(
+        `[plan-checkin] coach replied for workout ${workoutId} (${status}, runs=${matchingRuns.length})`,
+      );
     });
   } catch (err) {
     console.error("[plan-checkin] failed:", err);
   }
 }
 
+/** Prefer awaiting via next/server after() from route handlers. */
 export function schedulePlanWorkoutCheckIn(
   userId: string,
   workoutId: string,
   status: WorkoutCompletionStatus,
   options?: { timeZone?: string | null },
-): void {
-  void generatePlanWorkoutCheckIn(userId, workoutId, status, options);
+): Promise<void> {
+  return generatePlanWorkoutCheckIn(userId, workoutId, status, options);
 }
 
 /** @deprecated local helper kept for tests */

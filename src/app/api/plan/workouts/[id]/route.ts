@@ -1,12 +1,14 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { requireUserId, AuthError } from "@/lib/session";
 import { prisma } from "@/lib/prisma";
 import { handleRouteError, parseJsonBody } from "@/lib/http";
 import { rateLimit } from "@/lib/rate-limit";
 import {
-  schedulePlanWorkoutCheckIn,
+  generatePlanWorkoutCheckIn,
   type WorkoutCompletionStatus,
 } from "@/lib/plan-checkin";
+
+export const maxDuration = 60;
 
 const STATUSES = new Set(["as_planned", "modified", null]);
 
@@ -89,12 +91,16 @@ export async function PATCH(
       );
 
     if (shouldCoach) {
-      schedulePlanWorkoutCheckIn(
-        userId,
-        workoutId,
-        status as WorkoutCompletionStatus,
-        { timeZone: parsed.data.timeZone },
-      );
+      // Critical on Vercel: bare void/fire-and-forget is killed when the
+      // response returns. after() keeps the isolate alive until the coach
+      // Strava sync + LLM reply finish and are saved to chat.
+      const coachStatus = status as WorkoutCompletionStatus;
+      const timeZone = parsed.data.timeZone;
+      after(async () => {
+        await generatePlanWorkoutCheckIn(userId, workoutId, coachStatus, {
+          timeZone,
+        });
+      });
     }
 
     return NextResponse.json({

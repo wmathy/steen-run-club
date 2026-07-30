@@ -395,7 +395,7 @@ export async function syncStravaRunsForUser(
       await notifyCoachOfStravaRuns(userId, createdRuns);
       // One coach debrief for all newly created, recent runs (avoids chat flood)
       if (!options?.skipCoachDebrief) {
-        schedulePostRunCoachFeedback(userId, createdRuns);
+        await schedulePostRunCoachFeedback(userId, createdRuns);
       }
     }
 
@@ -440,7 +440,7 @@ export async function importStravaActivityById(
 
     if (result.status === "created") {
       await notifyCoachOfStravaRuns(conn.userId, [result.run]);
-      schedulePostRunCoachFeedback(conn.userId, [result.run]);
+      await schedulePostRunCoachFeedback(conn.userId, [result.run]);
     }
   });
 }

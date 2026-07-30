@@ -106,7 +106,7 @@ export async function POST(req: Request) {
           source: run.source,
         },
       ]),
-    );
+    ); // returns Promise — after() waits until coach debrief finishes
 
     return NextResponse.json({ run }, { status: 201 });
   } catch (err) {

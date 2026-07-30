@@ -207,14 +207,15 @@ Write your coach message now. Adjust the plan with tools only if trends justify 
   }
 }
 
-/** Schedule debrief without blocking the HTTP response (Next.js after()). */
+/**
+ * Debrief after a run. Call via next/server after(() => schedule...) so Vercel
+ * keeps the serverless isolate alive until the promise settles.
+ */
 export function schedulePostRunCoachFeedback(
   userId: string,
   runs: LoggedRunSummary[],
-): void {
+): Promise<void> {
   const filtered = runs.filter(shouldDebriefRun);
-  if (!filtered.length) return;
-
-  // Dynamic import avoids circular deps at module load in edge cases
-  void generatePostRunCoachFeedback(userId, filtered);
+  if (!filtered.length) return Promise.resolve();
+  return generatePostRunCoachFeedback(userId, filtered);
 }
