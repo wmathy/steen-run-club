@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   dayName,
   formatDuration,
@@ -55,6 +55,15 @@ type SelectedWorkout = {
   date: Date;
 };
 
+type TimelineItem = {
+  workout: Workout;
+  week: Week;
+  date: Date;
+  isToday: boolean;
+  isPast: boolean;
+  isFuture: boolean;
+};
+
 function weekMileage(workouts: Workout[]): number {
   return workouts.reduce((sum, wo) => sum + (wo.distanceMiles ?? 0), 0);
 }
@@ -67,9 +76,12 @@ function isSameLocalDay(a: Date, b: Date): boolean {
   );
 }
 
+function startOfLocalDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0);
+}
+
 function localToday(): Date {
-  const n = new Date();
-  return new Date(n.getFullYear(), n.getMonth(), n.getDate(), 12, 0, 0);
+  return startOfLocalDay(new Date());
 }
 
 function completionLabel(status: CompletionStatus | undefined): string | null {
@@ -87,6 +99,43 @@ function deviceTimeZone(): string | undefined {
   }
 }
 
+/** Nearest scrollable ancestor (main on desktop, document on mobile). */
+function getScrollParent(el: HTMLElement): HTMLElement | null {
+  let node: HTMLElement | null = el.parentElement;
+  while (node) {
+    const { overflowY } = getComputedStyle(node);
+    if (
+      (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") &&
+      node.scrollHeight > node.clientHeight
+    ) {
+      return node;
+    }
+    node = node.parentElement;
+  }
+  return null;
+}
+
+/**
+ * Scroll so `target` sits just below `header` inside the relevant scroll container.
+ */
+function scrollTargetUnderHeader(
+  target: HTMLElement,
+  header: HTMLElement,
+  behavior: ScrollBehavior = "auto",
+) {
+  const gap = 8;
+  const headerBottom = header.getBoundingClientRect().bottom;
+  const targetTop = target.getBoundingClientRect().top;
+  const delta = targetTop - headerBottom - gap;
+
+  const parent = getScrollParent(target);
+  if (parent) {
+    parent.scrollBy({ top: delta, behavior });
+  } else {
+    window.scrollBy({ top: delta, behavior });
+  }
+}
+
 export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
   const [plan, setPlan] = useState(initialPlan);
   const [selected, setSelected] = useState<SelectedWorkout | null>(null);
@@ -94,9 +143,13 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const titleId = useId();
+  const headerRef = useRef<HTMLElement>(null);
+  const todayAnchorRef = useRef<HTMLDivElement>(null);
+  const didScrollToToday = useRef(false);
 
   useEffect(() => {
     setPlan(initialPlan);
+    didScrollToToday.current = false;
   }, [initialPlan]);
 
   useEffect(() => {
@@ -112,6 +165,73 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
       document.body.style.overflow = prev;
     };
   }, [selected]);
+
+  const today = useMemo(() => localToday(), []);
+
+  const timeline = useMemo((): TimelineItem[] => {
+    if (!plan) return [];
+    const items: TimelineItem[] = [];
+    for (const week of plan.weeks) {
+      const sorted = [...week.workouts].sort(
+        (a, b) => a.dayOfWeek - b.dayOfWeek,
+      );
+      for (const workout of sorted) {
+        const date = workoutDate(
+          plan.startDate,
+          week.weekNumber,
+          workout.dayOfWeek,
+        );
+        const day = startOfLocalDay(date);
+        const isToday = isSameLocalDay(day, today);
+        const isPast = day.getTime() < today.getTime() && !isToday;
+        const isFuture = day.getTime() > today.getTime();
+        items.push({ workout, week, date: day, isToday, isPast, isFuture });
+      }
+    }
+    items.sort((a, b) => {
+      const t = a.date.getTime() - b.date.getTime();
+      if (t !== 0) return t;
+      // Same day: runs before strength, rest last
+      const rank = (type: string) =>
+        type === "rest" ? 2 : type === "strength" ? 1 : 0;
+      return rank(a.workout.type) - rank(b.workout.type);
+    });
+    return items;
+  }, [plan, today]);
+
+  const hasToday = timeline.some((t) => t.isToday);
+
+  // Position "today" just under the sticky plan header on open
+  useLayoutEffect(() => {
+    if (!plan || didScrollToToday.current) return;
+    if (!hasToday) return;
+
+    const run = () => {
+      const target = todayAnchorRef.current;
+      const header = headerRef.current;
+      if (!target || !header) return;
+      scrollTargetUnderHeader(target, header, "auto");
+      didScrollToToday.current = true;
+    };
+
+    // Double rAF: wait for sticky header + layout paint
+    const id = requestAnimationFrame(() => {
+      requestAnimationFrame(run);
+    });
+    // Retry once after images/fonts settle
+    const t = window.setTimeout(run, 120);
+    return () => {
+      cancelAnimationFrame(id);
+      window.clearTimeout(t);
+    };
+  }, [plan, hasToday, timeline.length]);
+
+  function jumpToToday() {
+    const target = todayAnchorRef.current;
+    const header = headerRef.current;
+    if (!target || !header) return;
+    scrollTargetUnderHeader(target, header, "smooth");
+  }
 
   function updateWorkoutLocal(
     workoutId: string,
@@ -136,11 +256,7 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
     );
   }
 
-  async function setCompletion(
-    workout: Workout,
-    next: CompletionStatus,
-  ) {
-    // Toggle off if tapping the same option again
+  async function setCompletion(workout: Workout, next: CompletionStatus) {
     const status: CompletionStatus =
       workout.completionStatus === next ? null : next;
 
@@ -148,7 +264,6 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
     setErrorMsg(null);
     setStatusMsg(null);
 
-    // Optimistic UI
     updateWorkoutLocal(workout.id, {
       completed: status !== null,
       completionStatus: status,
@@ -172,7 +287,6 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
         };
       };
       if (!res.ok) {
-        // Revert
         updateWorkoutLocal(workout.id, {
           completed: workout.completed,
           completionStatus: workout.completionStatus ?? null,
@@ -223,146 +337,228 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
     );
   }
 
-  const today = localToday();
   const planStartLabel = formatShortDate(
     weekDateRange(plan.startDate, 1).start,
   );
 
+  // Group timeline items by week for week headers while keeping day order
+  let lastWeekId: string | null = null;
+  let lastDateKey: string | null = null;
+  let todayAnchorPlaced = false;
+
   return (
-    <div className="space-y-6">
-      <div className="rounded-2xl border border-card-border bg-card/80 p-5">
-        <h1 className="text-xl font-bold">{plan.title}</h1>
-        {plan.goal && (
-          <p className="mt-1 text-sm text-accent">Goal: {plan.goal}</p>
+    <div className="relative">
+      {/* Sticky plan header — today scrolls to sit just under this */}
+      <header
+        ref={headerRef}
+        className={cn(
+          "sticky z-20 -mx-3 border-b border-card-border bg-background/95 px-3 py-3 backdrop-blur-md sm:-mx-4 sm:px-4 md:-mx-8 md:px-8",
+          // Sit below mobile top bar; flush under main scroll on desktop
+          "top-[calc(var(--mobile-header-h)+var(--safe-top))] md:top-0",
         )}
-        <p className="mt-2 text-xs text-muted">Starts {planStartLabel}</p>
-        {plan.notes && (
-          <p className="mt-3 text-sm text-muted">{plan.notes}</p>
-        )}
-        <p className="mt-3 text-[11px] text-muted">
-          Tap a day for full workout details. Mark complete as planned or
-          modified — your coach will review Strava/run data and reply in Coach
-          chat.
-        </p>
-      </div>
-
-      {plan.weeks.map((week) => {
-        const { start, end } = weekDateRange(plan.startDate, week.weekNumber);
-        const totalMiles = weekMileage(week.workouts);
-        const rounded = Math.round(totalMiles * 10) / 10;
-
-        return (
-          <section key={week.id} className="space-y-3">
-            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-              <div>
-                <h2 className="text-sm font-semibold">
-                  Week {week.weekNumber}
-                  {week.focus ? (
-                    <span className="ml-2 font-normal text-muted">
-                      — {week.focus}
-                    </span>
-                  ) : null}
-                </h2>
-                <p className="mt-0.5 text-xs text-muted">
-                  {formatWeekRange(start, end)}
-                </p>
-              </div>
-              <div className="text-right">
-                <p className="text-sm font-semibold text-accent">
-                  {formatMiles(rounded)}
-                </p>
-                <p className="text-[11px] text-muted">total mileage</p>
-              </div>
+      >
+        <div className="rounded-2xl border border-card-border bg-card/90 p-4 sm:p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-muted">
+                Training plan
+              </p>
+              <h1 className="mt-0.5 text-lg font-bold sm:text-xl">
+                {plan.title}
+              </h1>
+              {plan.goal && (
+                <p className="mt-1 text-sm text-accent">Goal: {plan.goal}</p>
+              )}
+              <p className="mt-1 text-xs text-muted">Starts {planStartLabel}</p>
             </div>
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {week.workouts.map((wo) => {
-                const date = workoutDate(
-                  plan.startDate,
-                  week.weekNumber,
-                  wo.dayOfWeek,
-                );
-                const isToday = isSameLocalDay(date, today);
-                const mark = completionLabel(wo.completionStatus);
-                return (
-                  <button
-                    key={wo.id}
-                    type="button"
-                    onClick={() =>
-                      setSelected({
-                        workout: wo,
-                        weekNumber: week.weekNumber,
-                        weekFocus: week.focus,
-                        date,
-                      })
-                    }
+            {hasToday && (
+              <button
+                type="button"
+                onClick={jumpToToday}
+                className="min-h-10 shrink-0 rounded-lg border border-accent/40 bg-accent-soft px-3 py-2 text-xs font-semibold text-accent"
+              >
+                Jump to today
+              </button>
+            )}
+          </div>
+          {plan.notes && (
+            <p className="mt-2 text-sm text-muted line-clamp-2">{plan.notes}</p>
+          )}
+          <p className="mt-2 text-[11px] text-muted">
+            Today is under this header. Scroll up for past days · scroll down
+            for upcoming training.
+          </p>
+        </div>
+      </header>
+
+      <div className="mt-4 space-y-3 pb-8">
+        {!hasToday && (
+          <p className="rounded-xl border border-dashed border-card-border bg-card/40 px-4 py-3 text-center text-xs text-muted">
+            No workout scheduled for today in this plan. Scroll to browse all
+            days.
+          </p>
+        )}
+
+        {timeline.map((item) => {
+          const weekChanged = item.week.id !== lastWeekId;
+          lastWeekId = item.week.id;
+          const dateKey = `${item.date.getFullYear()}-${item.date.getMonth()}-${item.date.getDate()}`;
+          const showDateDivider = dateKey !== lastDateKey;
+          lastDateKey = dateKey;
+
+          const placeTodayAnchor = item.isToday && !todayAnchorPlaced;
+          if (placeTodayAnchor) todayAnchorPlaced = true;
+
+          const mark = completionLabel(item.workout.completionStatus);
+          const { start, end } = weekDateRange(
+            plan.startDate,
+            item.week.weekNumber,
+          );
+          const totalMiles = weekMileage(item.week.workouts);
+          const rounded = Math.round(totalMiles * 10) / 10;
+
+          return (
+            <div key={item.workout.id} className="space-y-3">
+              {weekChanged && (
+                <div
+                  className={cn(
+                    "flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 pt-2",
+                    item.isPast && "opacity-80",
+                  )}
+                >
+                  <div>
+                    <h2 className="text-sm font-semibold">
+                      Week {item.week.weekNumber}
+                      {item.week.focus ? (
+                        <span className="ml-2 font-normal text-muted">
+                          — {item.week.focus}
+                        </span>
+                      ) : null}
+                    </h2>
+                    <p className="mt-0.5 text-xs text-muted">
+                      {formatWeekRange(start, end)}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-semibold text-accent">
+                      {formatMiles(rounded)}
+                    </p>
+                    <p className="text-[11px] text-muted">total mileage</p>
+                  </div>
+                </div>
+              )}
+
+              {placeTodayAnchor && (
+                <div
+                  ref={todayAnchorRef}
+                  id="plan-today"
+                  className="scroll-mt-[calc(var(--mobile-header-h)+var(--safe-top)+7.5rem)] md:scroll-mt-[8.5rem]"
+                  aria-label="Today"
+                >
+                  <div className="mb-2 flex items-center gap-2">
+                    <div className="h-px flex-1 bg-accent/40" />
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-accent">
+                      Today
+                    </span>
+                    <div className="h-px flex-1 bg-accent/40" />
+                  </div>
+                </div>
+              )}
+
+              {showDateDivider && !item.isToday && (
+                <p
+                  className={cn(
+                    "px-0.5 text-[11px] font-medium uppercase tracking-wide",
+                    item.isPast ? "text-muted/70" : "text-muted",
+                  )}
+                >
+                  {dayName(item.workout.dayOfWeek)} ·{" "}
+                  {formatShortDate(item.date)}
+                  {item.isPast ? " · past" : ""}
+                </p>
+              )}
+
+              <button
+                type="button"
+                onClick={() =>
+                  setSelected({
+                    workout: item.workout,
+                    weekNumber: item.week.weekNumber,
+                    weekFocus: item.week.focus,
+                    date: item.date,
+                  })
+                }
+                className={cn(
+                  "w-full rounded-xl border p-3 text-left transition active:scale-[0.99]",
+                  item.isToday
+                    ? "border-accent bg-accent-soft ring-2 ring-accent/50 shadow-[0_0_0_1px_rgba(61,214,140,0.25)]"
+                    : item.isPast
+                      ? "border-card-border/70 bg-card/40 opacity-85 hover:border-accent/30"
+                      : "border-card-border bg-card/60 hover:border-accent/40",
+                )}
+              >
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-muted">
+                    {dayName(item.workout.dayOfWeek)}{" "}
+                    <span className="text-muted/80">
+                      {formatShortDate(item.date)}
+                    </span>
+                    {item.isToday && (
+                      <span className="ml-1.5 rounded-full bg-accent px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-black">
+                        Today
+                      </span>
+                    )}
+                  </span>
+                  <span
                     className={cn(
-                      "rounded-xl border p-3 text-left transition active:scale-[0.99]",
-                      isToday
-                        ? "border-accent bg-accent-soft ring-2 ring-accent/50 shadow-[0_0_0_1px_rgba(61,214,140,0.25)]"
-                        : "border-card-border bg-card/60 hover:border-accent/40",
+                      "rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide",
+                      item.workout.type === "strength"
+                        ? "bg-accent-soft text-accent"
+                        : "bg-white/5 text-muted",
                     )}
                   >
-                    <div className="mb-1 flex items-center justify-between gap-2">
-                      <span className="text-xs font-medium text-muted">
-                        {dayName(wo.dayOfWeek)}{" "}
-                        <span className="text-muted/80">
-                          {formatShortDate(date)}
-                        </span>
-                        {isToday && (
-                          <span className="ml-1.5 rounded-full bg-accent px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-black">
-                            Today
-                          </span>
-                        )}
-                      </span>
-                      <span
-                        className={cn(
-                          "rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide",
-                          wo.type === "strength"
-                            ? "bg-accent-soft text-accent"
-                            : "bg-white/5 text-muted",
-                        )}
-                      >
-                        {workoutTypeLabel(wo.type)}
-                      </span>
-                    </div>
-                    <h3 className="text-sm font-semibold leading-snug">
-                      {wo.title}
-                    </h3>
-                    <div className="mt-1 text-xs text-muted">
-                      {wo.distanceMiles != null &&
-                        formatMiles(wo.distanceMiles)}
-                      {wo.distanceMiles != null &&
-                        wo.durationMin != null &&
-                        " · "}
-                      {wo.durationMin != null &&
-                        formatDuration(wo.durationMin)}
-                      {wo.targetPace && (
-                        <span className="block text-accent/90">
-                          {wo.targetPace}
-                        </span>
-                      )}
-                    </div>
-                    {wo.description && (
-                      <p className="mt-2 line-clamp-2 text-xs text-muted/90">
-                        {wo.description}
-                      </p>
-                    )}
-                    {mark ? (
-                      <p className="mt-2 text-[10px] font-semibold text-accent">
-                        ✓ {mark}
-                      </p>
-                    ) : (
-                      <p className="mt-2 text-[10px] font-medium text-accent/80">
-                        Tap for details &amp; complete
-                      </p>
-                    )}
-                  </button>
-                );
-              })}
+                    {workoutTypeLabel(item.workout.type)}
+                  </span>
+                </div>
+                <h3 className="text-sm font-semibold leading-snug">
+                  {item.workout.title}
+                </h3>
+                <div className="mt-1 text-xs text-muted">
+                  {item.workout.distanceMiles != null &&
+                    formatMiles(item.workout.distanceMiles)}
+                  {item.workout.distanceMiles != null &&
+                    item.workout.durationMin != null &&
+                    " · "}
+                  {item.workout.durationMin != null &&
+                    formatDuration(item.workout.durationMin)}
+                  {item.workout.targetPace && (
+                    <span className="block text-accent/90">
+                      {item.workout.targetPace}
+                    </span>
+                  )}
+                </div>
+                {item.workout.description && (
+                  <p className="mt-2 line-clamp-2 text-xs text-muted/90">
+                    {item.workout.description}
+                  </p>
+                )}
+                {mark ? (
+                  <p className="mt-2 text-[10px] font-semibold text-accent">
+                    ✓ {mark}
+                  </p>
+                ) : (
+                  <p className="mt-2 text-[10px] font-medium text-accent/80">
+                    Tap for details &amp; complete
+                  </p>
+                )}
+              </button>
             </div>
-          </section>
-        );
-      })}
+          );
+        })}
+
+        {/* Extra room so the last future days can clear the bottom nav */}
+        <div className="h-8" aria-hidden />
+      </div>
 
       {selected && (
         <div

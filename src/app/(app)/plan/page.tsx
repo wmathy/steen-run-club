@@ -51,15 +51,8 @@ export default async function PlanPage() {
     : null;
 
   return (
-    <div className="mobile-page mx-auto w-full max-w-6xl space-y-4 p-3 sm:p-4 md:p-8">
-      <div>
-        <h1 className="text-xl font-bold">Training plan</h1>
-        <p className="mt-1 text-sm text-muted">
-          Structured weeks and workouts saved by your coach. Tap a day to mark
-          complete as planned or modified — the coach will review your run data
-          and reply in chat.
-        </p>
-      </div>
+    <div className="mobile-page mx-auto w-full max-w-6xl p-3 sm:p-4 md:p-8">
+      {/* Header + scroll-to-today live inside PlanView */}
       <PlanView plan={planForClient} />
     </div>
   );
