@@ -15,7 +15,6 @@ import {
   formatDuration,
   formatMiles,
   formatShortDate,
-  formatWeekRange,
   weekDateRange,
   workoutDate,
   workoutTypeLabel,
@@ -102,16 +101,8 @@ function deviceTimeZone(): string | undefined {
   }
 }
 
-/** Reset window + any overflow parent so the plan always opens at the top. */
-function scrollPageToTop() {
-  window.scrollTo({ top: 0, left: 0, behavior: "instant" in window ? "instant" as ScrollBehavior : "auto" });
-  document.documentElement.scrollTop = 0;
-  document.body.scrollTop = 0;
-  // Desktop app shell scrolls inside <main>
-  const main = document.querySelector("main");
-  if (main instanceof HTMLElement) {
-    main.scrollTop = 0;
-  }
+function rankType(type: string): number {
+  return type === "rest" ? 2 : type === "strength" ? 1 : 0;
 }
 
 function SectionLabel({
@@ -212,6 +203,15 @@ function WorkoutCard({
   );
 }
 
+/**
+ * Timeline order (top → bottom of the scroll list):
+ *   PAST (oldest → yesterday)  ← above today; swipe/finger-down reveals (under header)
+ *   TODAY                      ← docked at top of viewport on open
+ *   FUTURE (tomorrow → far)    ← below today; swipe/finger-up reveals
+ *
+ * On phones, “scroll up” usually means swipe up (see content below);
+ * “scroll down” means swipe down (see content above).
+ */
 export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
   const pathname = usePathname();
   const [plan, setPlan] = useState(initialPlan);
@@ -220,26 +220,15 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const titleId = useId();
-  const todayBlockRef = useRef<HTMLElement>(null);
-  const pastBlockRef = useRef<HTMLElement>(null);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const todayRef = useRef<HTMLElement>(null);
+  const didAnchor = useRef(false);
 
   useEffect(() => {
     setPlan(initialPlan);
+    didAnchor.current = false;
   }, [initialPlan]);
-
-  // Always start at the top when opening /plan (mobile + desktop).
-  // DOM order puts Today first, so top === current day under the header.
-  useLayoutEffect(() => {
-    if (pathname !== "/plan") return;
-    scrollPageToTop();
-    // iOS Safari / client nav: re-apply after layout and paint
-    const t1 = window.setTimeout(scrollPageToTop, 50);
-    const t2 = window.setTimeout(scrollPageToTop, 200);
-    return () => {
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
-    };
-  }, [pathname, plan?.id]);
 
   useEffect(() => {
     if (!selected) return;
@@ -261,10 +250,7 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
     if (!plan) return [];
     const items: TimelineItem[] = [];
     for (const week of plan.weeks) {
-      const sorted = [...week.workouts].sort(
-        (a, b) => a.dayOfWeek - b.dayOfWeek,
-      );
-      for (const workout of sorted) {
+      for (const workout of week.workouts) {
         const date = workoutDate(
           plan.startDate,
           week.weekNumber,
@@ -280,9 +266,7 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
     items.sort((a, b) => {
       const t = a.date.getTime() - b.date.getTime();
       if (t !== 0) return t;
-      const rank = (type: string) =>
-        type === "rest" ? 2 : type === "strength" ? 1 : 0;
-      return rank(a.workout.type) - rank(b.workout.type);
+      return rankType(a.workout.type) - rankType(b.workout.type);
     });
     return items;
   }, [plan, today]);
@@ -291,30 +275,70 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
     () => timeline.filter((t) => t.isToday),
     [timeline],
   );
+
+  // Oldest past at the top of the document; yesterday sits just above today
+  const pastItems = useMemo(
+    () => timeline.filter((t) => t.isPast),
+    [timeline],
+  );
+
+  // Tomorrow first under today, then later days further down
   const futureItems = useMemo(
     () => timeline.filter((t) => t.isFuture),
     [timeline],
   );
-  // Most recent past first (yesterday near the top of the past list)
-  const pastItems = useMemo(
-    () => timeline.filter((t) => t.isPast).reverse(),
-    [timeline],
-  );
 
-  function jumpToToday() {
-    scrollPageToTop();
-    todayBlockRef.current?.scrollIntoView({
-      block: "start",
-      behavior: "smooth",
-    });
-    window.setTimeout(scrollPageToTop, 80);
+  /**
+   * Scroll the plan list so Today sits at the top of the scroll viewport.
+   * Future content stays above (scroll up); past stays below (scroll down).
+   */
+  function anchorToday(behavior: ScrollBehavior = "auto") {
+    const scroller = scrollRef.current;
+    const todayEl = todayRef.current;
+    if (!scroller || !todayEl) return false;
+
+    // offsetTop relative to the scroll container's content
+    const scrollerRect = scroller.getBoundingClientRect();
+    const todayRect = todayEl.getBoundingClientRect();
+    const delta = todayRect.top - scrollerRect.top + scroller.scrollTop;
+    // Small padding so the section label isn't flush against the edge
+    const top = Math.max(0, delta - 4);
+
+    if (behavior === "smooth") {
+      scroller.scrollTo({ top, behavior: "smooth" });
+    } else {
+      scroller.scrollTop = top;
+    }
+    return true;
   }
 
-  function jumpToPast() {
-    pastBlockRef.current?.scrollIntoView({
-      block: "start",
-      behavior: "smooth",
-    });
+  // Anchor when opening Plan (and when plan data changes)
+  useLayoutEffect(() => {
+    if (pathname !== "/plan" || !plan) return;
+
+    const run = () => {
+      if (anchorToday("auto")) {
+        didAnchor.current = true;
+      }
+    };
+
+    run();
+    const t1 = window.setTimeout(run, 50);
+    const t2 = window.setTimeout(run, 200);
+    const t3 = window.setTimeout(run, 400);
+    // After fonts / bottom nav settle on mobile
+    const t4 = window.setTimeout(run, 700);
+
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      window.clearTimeout(t3);
+      window.clearTimeout(t4);
+    };
+  }, [pathname, plan?.id, timeline.length]);
+
+  function jumpToToday() {
+    anchorToday("smooth");
   }
 
   function updateWorkoutLocal(
@@ -435,14 +459,17 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
   );
 
   return (
-    <div className="relative">
-      {/* Compact sticky header — Today content is the next thing in the DOM */}
-      <header
-        className={cn(
-          "sticky z-20 -mx-3 border-b border-card-border bg-background/95 px-3 py-2.5 backdrop-blur-md sm:-mx-4 sm:px-4 md:-mx-8 md:px-8",
-          "top-[calc(var(--mobile-header-h)+var(--safe-top))] md:top-0",
-        )}
-      >
+    <div
+      className={cn(
+        // Own scrollport so anchor math works on iOS (not the window)
+        "flex flex-col",
+        // Fill viewport under mobile chrome / desktop main
+        "h-[calc(100dvh-var(--mobile-header-h)-var(--mobile-nav-h)-var(--safe-top)-var(--safe-bottom)-0.5rem)]",
+        "md:h-[calc(100dvh-2rem)]",
+      )}
+    >
+      {/* Fixed (within this column) plan header — past content scrolls under it */}
+      <header className="z-20 shrink-0 border-b border-card-border bg-background/95 pb-2 pt-0 backdrop-blur-md">
         <div className="rounded-xl border border-card-border bg-card/95 px-3 py-3 sm:px-4">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
@@ -458,71 +485,35 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
                 </p>
               )}
             </div>
-            <div className="flex shrink-0 gap-1.5">
-              {pastItems.length > 0 && (
-                <button
-                  type="button"
-                  onClick={jumpToPast}
-                  className="min-h-9 rounded-lg border border-card-border px-2.5 py-1.5 text-[11px] font-semibold text-muted"
-                >
-                  Past
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={jumpToToday}
-                className="min-h-9 rounded-lg border border-accent/40 bg-accent-soft px-2.5 py-1.5 text-[11px] font-semibold text-accent"
-              >
-                Today
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={jumpToToday}
+              className="min-h-9 shrink-0 rounded-lg border border-accent/40 bg-accent-soft px-2.5 py-1.5 text-[11px] font-semibold text-accent"
+            >
+              Today
+            </button>
           </div>
-          <p className="mt-1.5 text-[10px] text-muted">
-            Starts {planStartLabel}. Today is on top — scroll down for past
-            sessions, then upcoming.
+          <p className="mt-1.5 text-[10px] leading-snug text-muted">
+            Starts {planStartLabel}. Today stays under this header — swipe up
+            for upcoming days, swipe down for past days.
           </p>
         </div>
       </header>
 
-      <div className="mt-3 space-y-3 pb-10">
-        {/* ——— TODAY (always first under header) ——— */}
-        <section
-          ref={todayBlockRef}
-          id="plan-today"
-          className="scroll-mt-[calc(var(--mobile-header-h)+var(--safe-top)+5.5rem)] md:scroll-mt-28"
-        >
-          <SectionLabel accent>Today · {formatShortDate(today)}</SectionLabel>
-          {todayItems.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-card-border bg-card/40 px-4 py-4 text-center text-sm text-muted">
-              No workout scheduled for today. Scroll down for past and upcoming
-              days.
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {todayItems.map((item) => (
-                <WorkoutCard
-                  key={item.workout.id}
-                  item={item}
-                  onOpen={() => openItem(item)}
-                />
-              ))}
-            </div>
-          )}
-        </section>
-
-        {/* ——— PAST (always visible — scroll to review earlier sessions) ——— */}
+      {/* Scrollable timeline */}
+      <div
+        ref={scrollRef}
+        className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-0.5 pb-6 pt-2 [-webkit-overflow-scrolling:touch]"
+      >
+        {/* PAST — above today; swipe down to reveal (tucks under plan header) */}
         {pastItems.length > 0 && (
-          <section
-            ref={pastBlockRef}
-            id="plan-past"
-            className="space-y-2 scroll-mt-[calc(var(--mobile-header-h)+var(--safe-top)+5.5rem)] md:scroll-mt-28"
-          >
+          <section id="plan-past" className="space-y-2 pb-4">
             <SectionLabel>
               Past training · {pastItems.length} session
               {pastItems.length === 1 ? "" : "s"}
             </SectionLabel>
             <p className="px-0.5 text-[11px] text-muted">
-              Most recent first. Keep scrolling for older days.
+              Older days above — swipe down from today to review them.
             </p>
             {pastItems.map((item) => (
               <WorkoutCard
@@ -534,10 +525,33 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
           </section>
         )}
 
-        {/* ——— UPCOMING ——— */}
+        {/* TODAY — anchored to top of this scrollport on open */}
+        <section ref={todayRef} id="plan-today" className="space-y-2 pb-4">
+          <SectionLabel accent>Today · {formatShortDate(today)}</SectionLabel>
+          {todayItems.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-card-border bg-card/40 px-4 py-4 text-center text-sm text-muted">
+              No workout scheduled for today.
+              {pastItems.length > 0 ? " Swipe down for past days." : ""}
+              {futureItems.length > 0 ? " Swipe up for upcoming days." : ""}
+            </div>
+          ) : (
+            todayItems.map((item) => (
+              <WorkoutCard
+                key={item.workout.id}
+                item={item}
+                onOpen={() => openItem(item)}
+              />
+            ))
+          )}
+        </section>
+
+        {/* FUTURE — below today; swipe up to reveal */}
         {futureItems.length > 0 && (
-          <section className="space-y-2">
+          <section className="space-y-2 pb-8">
             <SectionLabel>Upcoming</SectionLabel>
+            <p className="px-0.5 text-[11px] text-muted">
+              Swipe up from today for future training days.
+            </p>
             {futureItems.map((item) => (
               <WorkoutCard
                 key={item.workout.id}
@@ -547,6 +561,8 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
             ))}
           </section>
         )}
+
+        <div className="h-4" aria-hidden />
       </div>
 
       {selected && (

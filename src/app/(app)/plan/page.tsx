@@ -51,8 +51,8 @@ export default async function PlanPage() {
     : null;
 
   return (
-    <div className="mobile-page mx-auto w-full max-w-6xl p-3 sm:p-4 md:p-8">
-      {/* Header + scroll-to-today live inside PlanView */}
+    // No mobile-page bottom padding here — PlanView owns a full-height scrollport
+    <div className="mx-auto w-full max-w-6xl px-3 pt-2 sm:px-4 md:p-8 md:pt-4">
       <PlanView plan={planForClient} />
     </div>
   );
