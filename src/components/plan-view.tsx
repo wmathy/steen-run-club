@@ -219,9 +219,9 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
   const [savingId, setSavingId] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [showPast, setShowPast] = useState(false);
   const titleId = useId();
   const todayBlockRef = useRef<HTMLElement>(null);
+  const pastBlockRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     setPlan(initialPlan);
@@ -295,21 +295,26 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
     () => timeline.filter((t) => t.isFuture),
     [timeline],
   );
-  // Most recent past first when expanded
+  // Most recent past first (yesterday near the top of the past list)
   const pastItems = useMemo(
     () => timeline.filter((t) => t.isPast).reverse(),
     [timeline],
   );
 
   function jumpToToday() {
-    setShowPast(false);
     scrollPageToTop();
     todayBlockRef.current?.scrollIntoView({
       block: "start",
       behavior: "smooth",
     });
-    // Keep under sticky chrome
     window.setTimeout(scrollPageToTop, 80);
+  }
+
+  function jumpToPast() {
+    pastBlockRef.current?.scrollIntoView({
+      block: "start",
+      behavior: "smooth",
+    });
   }
 
   function updateWorkoutLocal(
@@ -453,17 +458,28 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
                 </p>
               )}
             </div>
-            <button
-              type="button"
-              onClick={jumpToToday}
-              className="min-h-9 shrink-0 rounded-lg border border-accent/40 bg-accent-soft px-2.5 py-1.5 text-[11px] font-semibold text-accent"
-            >
-              Today
-            </button>
+            <div className="flex shrink-0 gap-1.5">
+              {pastItems.length > 0 && (
+                <button
+                  type="button"
+                  onClick={jumpToPast}
+                  className="min-h-9 rounded-lg border border-card-border px-2.5 py-1.5 text-[11px] font-semibold text-muted"
+                >
+                  Past
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={jumpToToday}
+                className="min-h-9 rounded-lg border border-accent/40 bg-accent-soft px-2.5 py-1.5 text-[11px] font-semibold text-accent"
+              >
+                Today
+              </button>
+            </div>
           </div>
           <p className="mt-1.5 text-[10px] text-muted">
-            Starts {planStartLabel}. Today is at the top — scroll down for
-            upcoming, then past.
+            Starts {planStartLabel}. Today is on top — scroll down for past
+            sessions, then upcoming.
           </p>
         </div>
       </header>
@@ -478,7 +494,8 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
           <SectionLabel accent>Today · {formatShortDate(today)}</SectionLabel>
           {todayItems.length === 0 ? (
             <div className="rounded-xl border border-dashed border-card-border bg-card/40 px-4 py-4 text-center text-sm text-muted">
-              No workout scheduled for today. Scroll down for upcoming days.
+              No workout scheduled for today. Scroll down for past and upcoming
+              days.
             </div>
           ) : (
             <div className="space-y-2">
@@ -493,6 +510,30 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
           )}
         </section>
 
+        {/* ——— PAST (always visible — scroll to review earlier sessions) ——— */}
+        {pastItems.length > 0 && (
+          <section
+            ref={pastBlockRef}
+            id="plan-past"
+            className="space-y-2 scroll-mt-[calc(var(--mobile-header-h)+var(--safe-top)+5.5rem)] md:scroll-mt-28"
+          >
+            <SectionLabel>
+              Past training · {pastItems.length} session
+              {pastItems.length === 1 ? "" : "s"}
+            </SectionLabel>
+            <p className="px-0.5 text-[11px] text-muted">
+              Most recent first. Keep scrolling for older days.
+            </p>
+            {pastItems.map((item) => (
+              <WorkoutCard
+                key={item.workout.id}
+                item={item}
+                onOpen={() => openItem(item)}
+              />
+            ))}
+          </section>
+        )}
+
         {/* ——— UPCOMING ——— */}
         {futureItems.length > 0 && (
           <section className="space-y-2">
@@ -504,36 +545,6 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
                 onOpen={() => openItem(item)}
               />
             ))}
-          </section>
-        )}
-
-        {/* ——— PAST (below; optional expand so phone stays on today) ——— */}
-        {pastItems.length > 0 && (
-          <section className="space-y-2 pt-2">
-            <button
-              type="button"
-              onClick={() => setShowPast((v) => !v)}
-              className="flex w-full items-center justify-between rounded-xl border border-card-border bg-card/50 px-3 py-3 text-left"
-            >
-              <span className="text-sm font-semibold text-muted">
-                Past training
-              </span>
-              <span className="text-xs text-accent">
-                {showPast ? "Hide" : `Show ${pastItems.length}`}
-              </span>
-            </button>
-            {showPast && (
-              <>
-                <SectionLabel>Earlier days</SectionLabel>
-                {pastItems.map((item) => (
-                  <WorkoutCard
-                    key={item.workout.id}
-                    item={item}
-                    onOpen={() => openItem(item)}
-                  />
-                ))}
-              </>
-            )}
           </section>
         )}
       </div>
