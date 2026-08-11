@@ -1,12 +1,84 @@
 import Link from "next/link";
+import { DashboardUpcoming } from "@/components/dashboard-upcoming";
+import type { DashboardWeek } from "@/components/dashboard-upcoming";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import {
-  dayName,
-  formatDuration,
   formatMiles,
+  formatWeekRange,
+  weekDateRange,
+  workoutDate,
   workoutTypeLabel,
 } from "@/lib/utils";
+
+function startOfLocalDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0);
+}
+
+function localToday(): Date {
+  return startOfLocalDay(new Date());
+}
+
+function dateKeyLocal(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Prefer the plan week that contains today; otherwise nearest week
+ * (next future week, or last week if plan already ended).
+ */
+function resolveCurrentWeek<
+  T extends {
+    weekNumber: number;
+    focus: string | null;
+    workouts: Array<{
+      id: string;
+      dayOfWeek: number;
+      type: string;
+      title: string;
+      description: string | null;
+      distanceMiles: number | null;
+      durationMin: number | null;
+      targetPace: string | null;
+      completed: boolean;
+      completionStatus: string | null;
+    }>;
+  },
+>(
+  planStart: Date,
+  weeks: T[],
+): { week: T; rangeLabel: string } | null {
+  if (!weeks.length) return null;
+  const today = localToday().getTime();
+
+  for (const week of weeks) {
+    const { start, end } = weekDateRange(planStart, week.weekNumber);
+    const startT = startOfLocalDay(start).getTime();
+    const endT = startOfLocalDay(end).getTime();
+    if (today >= startT && today <= endT) {
+      return {
+        week,
+        rangeLabel: formatWeekRange(start, end),
+      };
+    }
+  }
+
+  // Next week that starts after today
+  for (const week of weeks) {
+    const { start, end } = weekDateRange(planStart, week.weekNumber);
+    if (startOfLocalDay(start).getTime() > today) {
+      return { week, rangeLabel: formatWeekRange(start, end) };
+    }
+  }
+
+  // Plan fully in the past — show last week
+  const last = weeks[weeks.length - 1]!;
+  const { start, end } = weekDateRange(planStart, last.weekNumber);
+  return { week: last, rangeLabel: formatWeekRange(start, end) };
+}
 
 export default async function DashboardPage() {
   const user = await getCurrentUser();
@@ -44,31 +116,50 @@ export default async function DashboardPage() {
   const miles7 = runs7.reduce((s, r) => s + r.distanceMiles, 0);
   const miles30 = runs30.reduce((s, r) => s + r.distanceMiles, 0);
 
-  const upcoming: Array<{
-    title: string;
-    type: string;
-    dayOfWeek: number;
-    weekNumber: number;
-    distanceMiles: number | null;
-    durationMin: number | null;
-  }> = [];
+  const today = localToday();
+  let currentWeek: DashboardWeek | null = null;
 
   if (plan) {
-    for (const week of plan.weeks) {
-      for (const wo of week.workouts) {
-        if (!wo.completed && wo.type !== "rest") {
-          upcoming.push({
-            title: wo.title,
-            type: wo.type,
+    const resolved = resolveCurrentWeek(plan.startDate, plan.weeks);
+    if (resolved) {
+      const { week, rangeLabel } = resolved;
+      const workouts = [...week.workouts]
+        .sort((a, b) => a.dayOfWeek - b.dayOfWeek)
+        .map((wo) => {
+          const date = workoutDate(
+            plan.startDate,
+            week.weekNumber,
+            wo.dayOfWeek,
+          );
+          const day = startOfLocalDay(date);
+          const isToday =
+            day.getFullYear() === today.getFullYear() &&
+            day.getMonth() === today.getMonth() &&
+            day.getDate() === today.getDate();
+          const isPast = day.getTime() < today.getTime() && !isToday;
+          return {
+            id: wo.id,
             dayOfWeek: wo.dayOfWeek,
-            weekNumber: week.weekNumber,
+            type: wo.type,
+            title: wo.title,
+            description: wo.description,
             distanceMiles: wo.distanceMiles,
             durationMin: wo.durationMin,
-          });
-        }
-        if (upcoming.length >= 5) break;
-      }
-      if (upcoming.length >= 5) break;
+            targetPace: wo.targetPace,
+            completed: wo.completed,
+            completionStatus: wo.completionStatus,
+            dateKey: dateKeyLocal(day),
+            isToday,
+            isPast,
+          };
+        });
+
+      currentWeek = {
+        weekNumber: week.weekNumber,
+        focus: week.focus,
+        rangeLabel,
+        workouts,
+      };
     }
   }
 
@@ -94,6 +185,7 @@ export default async function DashboardPage() {
         </Link>
       </div>
 
+      {/* Stats: plan + goals are in this grid — week sits directly below on phone */}
       <div className="grid grid-cols-2 gap-2.5 sm:gap-3 lg:grid-cols-4">
         {[
           {
@@ -135,80 +227,44 @@ export default async function DashboardPage() {
         ))}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <section className="rounded-2xl border border-card-border bg-card/60 p-5">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Recent runs</h2>
-            <Link href="/runs" className="text-xs text-accent hover:underline">
-              View all
-            </Link>
-          </div>
-          {recentRuns.length === 0 ? (
-            <p className="text-sm text-muted">
-              No runs yet.{" "}
-              <Link href="/runs" className="text-accent hover:underline">
-                Log your first run
-              </Link>
-            </p>
-          ) : (
-            <ul className="space-y-2">
-              {recentRuns.map((run) => (
-                <li
-                  key={run.id}
-                  className="flex items-center justify-between gap-2 rounded-lg bg-black/20 px-3 py-2 text-sm"
-                >
-                  <span className="text-muted">
-                    {run.date.toISOString().slice(0, 10)}
-                  </span>
-                  <span className="font-medium">
-                    {formatMiles(run.distanceMiles)}
-                  </span>
-                  <span className="text-xs uppercase text-muted">
-                    {workoutTypeLabel(run.type)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+      {/* Current week workouts — immediately under plan/goals cards */}
+      <DashboardUpcoming week={currentWeek} />
 
-        <section className="rounded-2xl border border-card-border bg-card/60 p-5">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Upcoming workouts</h2>
-            <Link href="/plan" className="text-xs text-accent hover:underline">
-              Full plan
+      <section className="rounded-2xl border border-card-border bg-card/60 p-5">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">Recent runs</h2>
+          <Link href="/runs" className="text-xs text-accent hover:underline">
+            View all
+          </Link>
+        </div>
+        {recentRuns.length === 0 ? (
+          <p className="text-sm text-muted">
+            No runs yet.{" "}
+            <Link href="/runs" className="text-accent hover:underline">
+              Log your first run
             </Link>
-          </div>
-          {upcoming.length === 0 ? (
-            <p className="text-sm text-muted">
-              No plan workouts yet. Ask the coach to build a week for you.
-            </p>
-          ) : (
-            <ul className="space-y-2">
-              {upcoming.map((wo, i) => (
-                <li
-                  key={`${wo.weekNumber}-${wo.dayOfWeek}-${i}`}
-                  className="rounded-lg bg-black/20 px-3 py-2"
-                >
-                  <div className="flex items-center justify-between gap-2 text-sm">
-                    <span className="font-medium">{wo.title}</span>
-                    <span className="text-xs text-muted">
-                      W{wo.weekNumber} · {dayName(wo.dayOfWeek)}
-                    </span>
-                  </div>
-                  <div className="mt-0.5 text-xs text-muted">
-                    {workoutTypeLabel(wo.type)}
-                    {wo.distanceMiles != null &&
-                      ` · ${formatMiles(wo.distanceMiles)}`}
-                    {wo.durationMin != null &&
-                      ` · ${formatDuration(wo.durationMin)}`}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      </div>
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {recentRuns.map((run) => (
+              <li
+                key={run.id}
+                className="flex items-center justify-between gap-2 rounded-lg bg-black/20 px-3 py-2 text-sm"
+              >
+                <span className="text-muted">
+                  {run.date.toISOString().slice(0, 10)}
+                </span>
+                <span className="font-medium">
+                  {formatMiles(run.distanceMiles)}
+                </span>
+                <span className="text-xs uppercase text-muted">
+                  {workoutTypeLabel(run.type)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }
