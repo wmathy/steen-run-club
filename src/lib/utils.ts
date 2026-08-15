@@ -27,6 +27,7 @@ export function workoutTypeLabel(type: string): string {
  * Parse a calendar date (YYYY-MM-DD or Date) into a local noon Date.
  * For Date values from Postgres/Prisma (often midnight or noon UTC), use
  * UTC Y/M/D so US timezones don't shift the calendar day back one day.
+ * Always returns a fresh Date (never mutates input).
  */
 export function parsePlanDate(value: Date | string): Date {
   if (value instanceof Date) {
@@ -35,9 +36,24 @@ export function parsePlanDate(value: Date | string): Date {
     const d = value.getUTCDate();
     return new Date(y, m, d, 12, 0, 0);
   }
-  const s = value.slice(0, 10);
+  const s = String(value).slice(0, 10);
   const [y, m, d] = s.split("-").map(Number);
   return new Date(y, m - 1, d, 12, 0, 0);
+}
+
+/** Stable YYYY-MM-DD from a local-noon plan Date (or any local calendar Date). */
+export function calendarDateKey(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/** Today's calendar key in the environment's local timezone. */
+export function todayDateKey(now = new Date()): string {
+  return calendarDateKey(
+    new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0),
+  );
 }
 
 /**
@@ -48,8 +64,9 @@ export function startOfWeekMonday(date: Date | string): Date {
   const d = parsePlanDate(date);
   const jsDay = d.getDay(); // 0=Sun … 6=Sat
   const offsetToMonday = jsDay === 0 ? -6 : 1 - jsDay;
-  d.setDate(d.getDate() + offsetToMonday);
-  return d;
+  const out = new Date(d.getTime());
+  out.setDate(out.getDate() + offsetToMonday);
+  return out;
 }
 
 /**
@@ -61,10 +78,11 @@ export function weekDateRange(
   weekNumber: number,
 ): { start: Date; end: Date } {
   const start = startOfWeekMonday(planStart);
-  start.setDate(start.getDate() + (weekNumber - 1) * 7);
-  const end = new Date(start);
+  const startCopy = new Date(start.getTime());
+  startCopy.setDate(startCopy.getDate() + (weekNumber - 1) * 7);
+  const end = new Date(startCopy.getTime());
   end.setDate(end.getDate() + 6);
-  return { start, end };
+  return { start: startCopy, end };
 }
 
 /**
@@ -78,8 +96,18 @@ export function workoutDate(
 ): Date {
   const d = startOfWeekMonday(planStart);
   const dow = Math.min(6, Math.max(0, Math.floor(dayOfWeek)));
-  d.setDate(d.getDate() + (weekNumber - 1) * 7 + dow);
-  return d;
+  const out = new Date(d.getTime());
+  out.setDate(out.getDate() + (weekNumber - 1) * 7 + dow);
+  return out;
+}
+
+/** YYYY-MM-DD for a plan workout (stable across client/server when start is ISO date). */
+export function workoutDateKey(
+  planStart: Date | string,
+  weekNumber: number,
+  dayOfWeek: number,
+): string {
+  return calendarDateKey(workoutDate(planStart, weekNumber, dayOfWeek));
 }
 
 /** e.g. "Mar 3" or "Mar 3 – Mar 9, 2026" */

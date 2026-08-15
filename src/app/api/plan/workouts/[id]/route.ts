@@ -27,6 +27,8 @@ export async function PATCH(
     const parsed = await parseJsonBody<{
       status?: "as_planned" | "modified" | null;
       timeZone?: string;
+      /** Calendar day the athlete saw in the UI (YYYY-MM-DD) — preferred over server recompute */
+      dateKey?: string;
     }>(req);
     if ("error" in parsed) {
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
@@ -99,6 +101,7 @@ export async function PATCH(
       after(async () => {
         await generatePlanWorkoutCheckIn(userId, workoutId, coachStatus, {
           timeZone,
+          dateKey: parsed.data.dateKey,
         });
       });
     }

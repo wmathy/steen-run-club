@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
@@ -15,8 +16,11 @@ import {
   formatDuration,
   formatMiles,
   formatShortDate,
+  parsePlanDate,
+  todayDateKey,
   weekDateRange,
   workoutDate,
+  workoutDateKey,
   workoutTypeLabel,
   cn,
 } from "@/lib/utils";
@@ -58,33 +62,19 @@ type SelectedWorkout = {
   workout: Workout;
   weekNumber: number;
   weekFocus: string | null;
-  date: Date;
+  /** Stable YYYY-MM-DD for the day the athlete opened */
+  dateKey: string;
 };
 
 type TimelineItem = {
   workout: Workout;
   week: Week;
   date: Date;
+  dateKey: string;
   isToday: boolean;
   isPast: boolean;
   isFuture: boolean;
 };
-
-function isSameLocalDay(a: Date, b: Date): boolean {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
-}
-
-function startOfLocalDay(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0);
-}
-
-function localToday(): Date {
-  return startOfLocalDay(new Date());
-}
 
 function completionLabel(status: CompletionStatus | undefined): string | null {
   if (status === "as_planned") return "As planned";
@@ -103,6 +93,30 @@ function deviceTimeZone(): string | undefined {
 
 function rankType(type: string): number {
   return type === "rest" ? 2 : type === "strength" ? 1 : 0;
+}
+
+function formatDateKeyLabel(dateKey: string): string {
+  return formatShortDate(parsePlanDate(dateKey));
+}
+
+/** Live calendar day key; refreshes when the tab becomes visible or every minute. */
+function useLiveTodayKey(): string {
+  const [key, setKey] = useState(() => todayDateKey());
+  useEffect(() => {
+    const tick = () => setKey(todayDateKey());
+    const id = window.setInterval(tick, 60_000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", tick);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", tick);
+    };
+  }, []);
+  return key;
 }
 
 function SectionLabel({
@@ -156,7 +170,9 @@ function WorkoutCard({
       <div className="mb-1 flex items-center justify-between gap-2">
         <span className="text-xs font-medium text-muted">
           {dayName(item.workout.dayOfWeek)}{" "}
-          <span className="text-muted/80">{formatShortDate(item.date)}</span>
+          <span className="text-muted/80">
+            {formatDateKeyLabel(item.dateKey)}
+          </span>
           {item.isToday && (
             <span className="ml-1.5 rounded-full bg-accent px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-black">
               Today
@@ -204,13 +220,10 @@ function WorkoutCard({
 }
 
 /**
- * Timeline order (top → bottom of the scroll list):
- *   PAST (oldest → yesterday)  ← above today; swipe/finger-down reveals (under header)
- *   TODAY                      ← docked at top of viewport on open
- *   FUTURE (tomorrow → far)    ← below today; swipe/finger-up reveals
- *
- * On phones, “scroll up” usually means swipe up (see content below);
- * “scroll down” means swipe down (see content above).
+ * Timeline order (top → bottom):
+ *   PAST (above today) → swipe down to review under the header
+ *   TODAY              → docked at top of scrollport on open
+ *   FUTURE (below)     → swipe up for upcoming
  */
 export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
   const pathname = usePathname();
@@ -223,12 +236,28 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const todayRef = useRef<HTMLElement>(null);
-  const didAnchor = useRef(false);
+  /** Only auto-dock today once per plan visit — never after marking complete. */
+  const didAnchorRef = useRef(false);
+  const anchoredPlanIdRef = useRef<string | null>(null);
+  /** Preserve list scroll while the detail sheet is open. */
+  const scrollBeforeModalRef = useRef(0);
+
+  const todayKey = useLiveTodayKey();
 
   useEffect(() => {
     setPlan(initialPlan);
-    didAnchor.current = false;
+    // New plan from coach → re-dock today; same plan → keep position
+    if (initialPlan?.id && initialPlan.id !== anchoredPlanIdRef.current) {
+      didAnchorRef.current = false;
+    }
   }, [initialPlan]);
+
+  useEffect(() => {
+    if (pathname !== "/plan") {
+      didAnchorRef.current = false;
+      anchoredPlanIdRef.current = null;
+    }
+  }, [pathname]);
 
   useEffect(() => {
     if (!selected) return;
@@ -244,64 +273,76 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
     };
   }, [selected]);
 
-  const today = useMemo(() => localToday(), []);
+  // Restore scroll after closing the detail sheet (body lock can jump iOS)
+  useEffect(() => {
+    if (selected) return;
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const y = scrollBeforeModalRef.current;
+    requestAnimationFrame(() => {
+      scroller.scrollTop = y;
+    });
+  }, [selected]);
 
   const timeline = useMemo((): TimelineItem[] => {
     if (!plan) return [];
     const items: TimelineItem[] = [];
     for (const week of plan.weeks) {
       for (const workout of week.workouts) {
+        const dateKey = workoutDateKey(
+          plan.startDate,
+          week.weekNumber,
+          workout.dayOfWeek,
+        );
         const date = workoutDate(
           plan.startDate,
           week.weekNumber,
           workout.dayOfWeek,
         );
-        const day = startOfLocalDay(date);
-        const isToday = isSameLocalDay(day, today);
-        const isPast = day.getTime() < today.getTime() && !isToday;
-        const isFuture = day.getTime() > today.getTime();
-        items.push({ workout, week, date: day, isToday, isPast, isFuture });
+        const isToday = dateKey === todayKey;
+        const isPast = dateKey < todayKey;
+        const isFuture = dateKey > todayKey;
+        items.push({
+          workout,
+          week,
+          date,
+          dateKey,
+          isToday,
+          isPast,
+          isFuture,
+        });
       }
     }
     items.sort((a, b) => {
-      const t = a.date.getTime() - b.date.getTime();
-      if (t !== 0) return t;
+      if (a.dateKey !== b.dateKey) {
+        return a.dateKey < b.dateKey ? -1 : 1;
+      }
       return rankType(a.workout.type) - rankType(b.workout.type);
     });
     return items;
-  }, [plan, today]);
+  }, [plan, todayKey]);
 
   const todayItems = useMemo(
     () => timeline.filter((t) => t.isToday),
     [timeline],
   );
-
-  // Oldest past at the top of the document; yesterday sits just above today
   const pastItems = useMemo(
     () => timeline.filter((t) => t.isPast),
     [timeline],
   );
-
-  // Tomorrow first under today, then later days further down
   const futureItems = useMemo(
     () => timeline.filter((t) => t.isFuture),
     [timeline],
   );
 
-  /**
-   * Scroll the plan list so Today sits at the top of the scroll viewport.
-   * Future content stays above (scroll up); past stays below (scroll down).
-   */
-  function anchorToday(behavior: ScrollBehavior = "auto") {
+  const anchorToday = useCallback((behavior: ScrollBehavior = "auto") => {
     const scroller = scrollRef.current;
     const todayEl = todayRef.current;
     if (!scroller || !todayEl) return false;
 
-    // offsetTop relative to the scroll container's content
     const scrollerRect = scroller.getBoundingClientRect();
     const todayRect = todayEl.getBoundingClientRect();
     const delta = todayRect.top - scrollerRect.top + scroller.scrollTop;
-    // Small padding so the section label isn't flush against the edge
     const top = Math.max(0, delta - 4);
 
     if (behavior === "smooth") {
@@ -310,63 +351,91 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
       scroller.scrollTop = top;
     }
     return true;
-  }
+  }, []);
 
-  // Anchor when opening Plan (and when plan data changes)
+  // Dock today only when first opening this plan — not after complete/modify.
   useLayoutEffect(() => {
     if (pathname !== "/plan" || !plan) return;
+    if (didAnchorRef.current && anchoredPlanIdRef.current === plan.id) return;
 
     const run = () => {
       if (anchorToday("auto")) {
-        didAnchor.current = true;
+        didAnchorRef.current = true;
+        anchoredPlanIdRef.current = plan.id;
       }
     };
 
     run();
     const t1 = window.setTimeout(run, 50);
     const t2 = window.setTimeout(run, 200);
-    const t3 = window.setTimeout(run, 400);
-    // After fonts / bottom nav settle on mobile
-    const t4 = window.setTimeout(run, 700);
-
+    const t3 = window.setTimeout(run, 450);
     return () => {
       window.clearTimeout(t1);
       window.clearTimeout(t2);
       window.clearTimeout(t3);
-      window.clearTimeout(t4);
     };
-  }, [pathname, plan?.id, timeline.length]);
+  }, [pathname, plan?.id, anchorToday]);
 
   function jumpToToday() {
     anchorToday("smooth");
+  }
+
+  function preserveScrollDuring(update: () => void) {
+    const scroller = scrollRef.current;
+    const y = scroller?.scrollTop ?? 0;
+    update();
+    requestAnimationFrame(() => {
+      if (scroller) scroller.scrollTop = y;
+      // Second frame: layout after React commit (completion badge height)
+      requestAnimationFrame(() => {
+        if (scroller) scroller.scrollTop = y;
+      });
+    });
   }
 
   function updateWorkoutLocal(
     workoutId: string,
     patch: { completed: boolean; completionStatus: CompletionStatus },
   ) {
-    setPlan((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        weeks: prev.weeks.map((w) => ({
-          ...w,
-          workouts: w.workouts.map((wo) =>
-            wo.id === workoutId ? { ...wo, ...patch } : wo,
-          ),
-        })),
-      };
+    preserveScrollDuring(() => {
+      setPlan((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          weeks: prev.weeks.map((w) => ({
+            ...w,
+            workouts: w.workouts.map((wo) =>
+              wo.id === workoutId ? { ...wo, ...patch } : wo,
+            ),
+          })),
+        };
+      });
+      setSelected((prev) =>
+        prev && prev.workout.id === workoutId
+          ? { ...prev, workout: { ...prev.workout, ...patch } }
+          : prev,
+      );
     });
-    setSelected((prev) =>
-      prev && prev.workout.id === workoutId
-        ? { ...prev, workout: { ...prev.workout, ...patch } }
-        : prev,
-    );
   }
 
   async function setCompletion(workout: Workout, next: CompletionStatus) {
     const status: CompletionStatus =
       workout.completionStatus === next ? null : next;
+
+    // Always use the date of the day the athlete opened (not "now")
+    const dateKey =
+      selected?.workout.id === workout.id
+        ? selected.dateKey
+        : plan
+          ? workoutDateKey(
+              plan.startDate,
+              // find week number from plan
+              plan.weeks.find((w) =>
+                w.workouts.some((wo) => wo.id === workout.id),
+              )?.weekNumber ?? 1,
+              workout.dayOfWeek,
+            )
+          : todayKey;
 
     setSavingId(workout.id);
     setErrorMsg(null);
@@ -384,6 +453,7 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
         body: JSON.stringify({
           status,
           timeZone: deviceTimeZone(),
+          dateKey,
         }),
       });
       const data = (await res.json().catch(() => ({}))) as {
@@ -427,11 +497,12 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
   }
 
   function openItem(item: TimelineItem) {
+    scrollBeforeModalRef.current = scrollRef.current?.scrollTop ?? 0;
     setSelected({
       workout: item.workout,
       weekNumber: item.week.weekNumber,
       weekFocus: item.week.focus,
-      date: item.date,
+      dateKey: item.dateKey,
     });
   }
 
@@ -457,18 +528,16 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
   const planStartLabel = formatShortDate(
     weekDateRange(plan.startDate, 1).start,
   );
+  const todayLabel = formatDateKeyLabel(todayKey);
 
   return (
     <div
       className={cn(
-        // Own scrollport so anchor math works on iOS (not the window)
         "flex flex-col",
-        // Fill viewport under mobile chrome / desktop main
         "h-[calc(100dvh-var(--mobile-header-h)-var(--mobile-nav-h)-var(--safe-top)-var(--safe-bottom)-0.5rem)]",
         "md:h-[calc(100dvh-2rem)]",
       )}
     >
-      {/* Fixed (within this column) plan header — past content scrolls under it */}
       <header className="z-20 shrink-0 border-b border-card-border bg-background/95 pb-2 pt-0 backdrop-blur-md">
         <div className="rounded-xl border border-card-border bg-card/95 px-3 py-3 sm:px-4">
           <div className="flex items-start justify-between gap-2">
@@ -494,18 +563,17 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
             </button>
           </div>
           <p className="mt-1.5 text-[10px] leading-snug text-muted">
-            Starts {planStartLabel}. Today stays under this header — swipe up
-            for upcoming days, swipe down for past days.
+            Today is <span className="font-semibold text-accent">{todayLabel}</span>
+            . Docked under this header — swipe up for upcoming, swipe down for
+            past.
           </p>
         </div>
       </header>
 
-      {/* Scrollable timeline */}
       <div
         ref={scrollRef}
         className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-0.5 pb-6 pt-2 [-webkit-overflow-scrolling:touch]"
       >
-        {/* PAST — above today; swipe down to reveal (tucks under plan header) */}
         {pastItems.length > 0 && (
           <section id="plan-past" className="space-y-2 pb-4">
             <SectionLabel>
@@ -525,9 +593,8 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
           </section>
         )}
 
-        {/* TODAY — anchored to top of this scrollport on open */}
         <section ref={todayRef} id="plan-today" className="space-y-2 pb-4">
-          <SectionLabel accent>Today · {formatShortDate(today)}</SectionLabel>
+          <SectionLabel accent>Today · {todayLabel}</SectionLabel>
           {todayItems.length === 0 ? (
             <div className="rounded-xl border border-dashed border-card-border bg-card/40 px-4 py-4 text-center text-sm text-muted">
               No workout scheduled for today.
@@ -545,7 +612,6 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
           )}
         </section>
 
-        {/* FUTURE — below today; swipe up to reveal */}
         {futureItems.length > 0 && (
           <section className="space-y-2 pb-8">
             <SectionLabel>Upcoming</SectionLabel>
@@ -591,8 +657,8 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
                 </h2>
                 <p className="mt-1 text-sm text-muted">
                   {dayName(selected.workout.dayOfWeek)},{" "}
-                  {formatShortDate(selected.date)}
-                  {isSameLocalDay(selected.date, today) && (
+                  {formatDateKeyLabel(selected.dateKey)}
+                  {selected.dateKey === todayKey && (
                     <span className="ml-2 rounded-full bg-accent px-2 py-0.5 text-[10px] font-bold uppercase text-black">
                       Today
                     </span>
@@ -664,9 +730,10 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
                   How did this day go?
                 </p>
                 <p className="text-xs text-muted">
-                  {selected.workout.type === "strength"
-                    ? "Check one option. Your coach will reply in the Coach tab about this lift session."
-                    : "Check one option. We'll match your Strava/run log for this date and your coach will reply in the Coach tab."}
+                  Marking complete uses this day&apos;s date (
+                  {formatDateKeyLabel(selected.dateKey)}
+                  {selected.dateKey === todayKey ? " — today" : ""}), not a
+                  different calendar day.
                 </p>
 
                 <label
@@ -724,8 +791,8 @@ export function PlanView({ plan: initialPlan }: { plan: Plan | null }) {
                   <span>
                     <span className="block text-sm font-semibold">
                       {selected.workout.type === "strength"
-                        ? "Modified today's workout"
-                        : "Modified today's run"}
+                        ? "Modified this workout"
+                        : "Modified this run"}
                     </span>
                     <span className="mt-0.5 block text-xs text-muted">
                       {selected.workout.type === "strength"

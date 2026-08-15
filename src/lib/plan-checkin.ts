@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { buildCoachSystemPrompt } from "@/lib/coach-prompt";
 import { appendChatTurn } from "@/lib/messages";
 import { withUserLock } from "@/lib/mutex";
-import { formatMiles, workoutDate } from "@/lib/utils";
+import { formatMiles, workoutDateKey } from "@/lib/utils";
 import { DEFAULT_COACH_TIME_ZONE } from "@/lib/clock";
 import {
   isStravaConfigured,
@@ -36,13 +36,6 @@ function formatPace(minPerMile: number | null): string {
   return `${m}:${s.toString().padStart(2, "0")}/mi`;
 }
 
-function localIsoFromDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
 /**
  * After the athlete checks "as planned" or "modified" on a plan workout,
  * pull latest Strava if connected, match runs to that day, and have the coach
@@ -52,7 +45,7 @@ export async function generatePlanWorkoutCheckIn(
   userId: string,
   workoutId: string,
   status: WorkoutCompletionStatus,
-  options?: { timeZone?: string | null },
+  options?: { timeZone?: string | null; dateKey?: string | null },
 ): Promise<void> {
   try {
     if (!process.env.XAI_API_KEY) {
@@ -81,17 +74,20 @@ export async function generatePlanWorkoutCheckIn(
       }
 
       const plan = workout.week.plan;
-      // Explicit workout.date is stored as UTC noon of the calendar day.
-      // Otherwise derive from plan week + dayOfWeek.
-      const dateIso = workout.date
-        ? runDateKey(workout.date)
-        : localIsoFromDate(
-            workoutDate(
-              plan.startDate,
-              workout.week.weekNumber,
-              workout.dayOfWeek,
-            ),
-          );
+      // Prefer the calendar day the athlete saw/tapped in the UI.
+      // Fall back to plan math (week + dayOfWeek), then optional stored workout.date.
+      const fromClient =
+        options?.dateKey &&
+        /^\d{4}-\d{2}-\d{2}$/.test(options.dateKey.trim())
+          ? options.dateKey.trim()
+          : null;
+      const dateIso =
+        fromClient ??
+        workoutDateKey(
+          plan.startDate,
+          workout.week.weekNumber,
+          workout.dayOfWeek,
+        );
 
       // Best-effort Strava pull so today's activity is available (no auto-debrief)
       try {
@@ -235,19 +231,7 @@ export function schedulePlanWorkoutCheckIn(
   userId: string,
   workoutId: string,
   status: WorkoutCompletionStatus,
-  options?: { timeZone?: string | null },
+  options?: { timeZone?: string | null; dateKey?: string | null },
 ): Promise<void> {
   return generatePlanWorkoutCheckIn(userId, workoutId, status, options);
-}
-
-/** @deprecated local helper kept for tests */
-export function planDateIsoForWorkout(
-  planStart: Date,
-  weekNumber: number,
-  dayOfWeek: number,
-  explicitDate?: Date | null,
-): string {
-  if (explicitDate) return runDateKey(explicitDate);
-  const d = workoutDate(planStart, weekNumber, dayOfWeek);
-  return localIsoFromDate(d);
 }
