@@ -1,84 +1,9 @@
 import Link from "next/link";
 import { DashboardUpcoming } from "@/components/dashboard-upcoming";
-import type { DashboardWeek } from "@/components/dashboard-upcoming";
+import type { DashboardPlanInput } from "@/components/dashboard-upcoming";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import {
-  formatMiles,
-  formatWeekRange,
-  weekDateRange,
-  workoutDate,
-  workoutTypeLabel,
-} from "@/lib/utils";
-
-function startOfLocalDay(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0);
-}
-
-function localToday(): Date {
-  return startOfLocalDay(new Date());
-}
-
-function dateKeyLocal(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-/**
- * Prefer the plan week that contains today; otherwise nearest week
- * (next future week, or last week if plan already ended).
- */
-function resolveCurrentWeek<
-  T extends {
-    weekNumber: number;
-    focus: string | null;
-    workouts: Array<{
-      id: string;
-      dayOfWeek: number;
-      type: string;
-      title: string;
-      description: string | null;
-      distanceMiles: number | null;
-      durationMin: number | null;
-      targetPace: string | null;
-      completed: boolean;
-      completionStatus: string | null;
-    }>;
-  },
->(
-  planStart: Date,
-  weeks: T[],
-): { week: T; rangeLabel: string } | null {
-  if (!weeks.length) return null;
-  const today = localToday().getTime();
-
-  for (const week of weeks) {
-    const { start, end } = weekDateRange(planStart, week.weekNumber);
-    const startT = startOfLocalDay(start).getTime();
-    const endT = startOfLocalDay(end).getTime();
-    if (today >= startT && today <= endT) {
-      return {
-        week,
-        rangeLabel: formatWeekRange(start, end),
-      };
-    }
-  }
-
-  // Next week that starts after today
-  for (const week of weeks) {
-    const { start, end } = weekDateRange(planStart, week.weekNumber);
-    if (startOfLocalDay(start).getTime() > today) {
-      return { week, rangeLabel: formatWeekRange(start, end) };
-    }
-  }
-
-  // Plan fully in the past — show last week
-  const last = weeks[weeks.length - 1]!;
-  const { start, end } = weekDateRange(planStart, last.weekNumber);
-  return { week: last, rangeLabel: formatWeekRange(start, end) };
-}
+import { formatMiles, workoutDateKey, workoutTypeLabel } from "@/lib/utils";
 
 export default async function DashboardPage() {
   const user = await getCurrentUser();
@@ -116,28 +41,15 @@ export default async function DashboardPage() {
   const miles7 = runs7.reduce((s, r) => s + r.distanceMiles, 0);
   const miles30 = runs30.reduce((s, r) => s + r.distanceMiles, 0);
 
-  const today = localToday();
-  let currentWeek: DashboardWeek | null = null;
-
-  if (plan) {
-    const resolved = resolveCurrentWeek(plan.startDate, plan.weeks);
-    if (resolved) {
-      const { week, rangeLabel } = resolved;
-      const workouts = [...week.workouts]
-        .sort((a, b) => a.dayOfWeek - b.dayOfWeek)
-        .map((wo) => {
-          const date = workoutDate(
-            plan.startDate,
-            week.weekNumber,
-            wo.dayOfWeek,
-          );
-          const day = startOfLocalDay(date);
-          const isToday =
-            day.getFullYear() === today.getFullYear() &&
-            day.getMonth() === today.getMonth() &&
-            day.getDate() === today.getDate();
-          const isPast = day.getTime() < today.getTime() && !isToday;
-          return {
+  // Pass plan + calendar dateKeys only. "Today" is decided on the client
+  // (same browser clock as Plan tab) so Home never uses server UTC as today.
+  const planForClient: DashboardPlanInput | null = plan
+    ? {
+        startDate: plan.startDate.toISOString(),
+        weeks: plan.weeks.map((w) => ({
+          weekNumber: w.weekNumber,
+          focus: w.focus,
+          workouts: w.workouts.map((wo) => ({
             id: wo.id,
             dayOfWeek: wo.dayOfWeek,
             type: wo.type,
@@ -148,20 +60,15 @@ export default async function DashboardPage() {
             targetPace: wo.targetPace,
             completed: wo.completed,
             completionStatus: wo.completionStatus,
-            dateKey: dateKeyLocal(day),
-            isToday,
-            isPast,
-          };
-        });
-
-      currentWeek = {
-        weekNumber: week.weekNumber,
-        focus: week.focus,
-        rangeLabel,
-        workouts,
-      };
-    }
-  }
+            dateKey: workoutDateKey(
+              plan.startDate,
+              w.weekNumber,
+              wo.dayOfWeek,
+            ),
+          })),
+        })),
+      }
+    : null;
 
   const greeting = user.name ? `Hey, ${user.name.split(" ")[0]}` : "Hey there";
 
@@ -185,7 +92,6 @@ export default async function DashboardPage() {
         </Link>
       </div>
 
-      {/* Stats: plan + goals are in this grid — week sits directly below on phone */}
       <div className="grid grid-cols-2 gap-2.5 sm:gap-3 lg:grid-cols-4">
         {[
           {
@@ -227,8 +133,7 @@ export default async function DashboardPage() {
         ))}
       </div>
 
-      {/* Current week workouts — immediately under plan/goals cards */}
-      <DashboardUpcoming week={currentWeek} />
+      <DashboardUpcoming plan={planForClient} />
 
       <section className="rounded-2xl border border-card-border bg-card/60 p-5">
         <div className="mb-4 flex items-center justify-between">

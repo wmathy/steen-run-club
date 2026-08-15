@@ -1,17 +1,21 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import {
   dayName,
   formatDuration,
   formatMiles,
   formatShortDate,
+  formatWeekRange,
+  parsePlanDate,
+  todayDateKey,
+  weekDateRange,
   workoutTypeLabel,
   cn,
 } from "@/lib/utils";
 
-export type DashboardWorkout = {
+export type DashboardWorkoutInput = {
   id: string;
   dayOfWeek: number;
   type: string;
@@ -22,27 +26,129 @@ export type DashboardWorkout = {
   targetPace: string | null;
   completed: boolean;
   completionStatus: string | null;
-  /** ISO date string YYYY-MM-DD for display */
+  /** Calendar day YYYY-MM-DD from plan math (not server "today") */
   dateKey: string;
+};
+
+export type DashboardWeekInput = {
+  weekNumber: number;
+  focus: string | null;
+  workouts: DashboardWorkoutInput[];
+};
+
+export type DashboardPlanInput = {
+  startDate: string;
+  weeks: DashboardWeekInput[];
+};
+
+type DisplayWorkout = DashboardWorkoutInput & {
   isToday: boolean;
   isPast: boolean;
 };
 
-export type DashboardWeek = {
+function formatDateKeyLabel(dateKey: string): string {
+  return formatShortDate(parsePlanDate(dateKey));
+}
+
+/** Same live clock as Plan tab — browser local calendar day. */
+function useLiveTodayKey(): string {
+  const [key, setKey] = useState(() => todayDateKey());
+  useEffect(() => {
+    const tick = () => setKey(todayDateKey());
+    const id = window.setInterval(tick, 60_000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", tick);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", tick);
+    };
+  }, []);
+  return key;
+}
+
+/**
+ * Week that contains todayKey; else next upcoming week; else last week.
+ * Uses dateKey strings only (no server timezone).
+ */
+function resolveWeekForToday(
+  plan: DashboardPlanInput,
+  todayKey: string,
+): {
   weekNumber: number;
   focus: string | null;
   rangeLabel: string;
-  workouts: DashboardWorkout[];
-};
+  workouts: DisplayWorkout[];
+} | null {
+  if (!plan.weeks.length) return null;
 
-function parseLocalDateKey(key: string): Date {
-  const [y, m, d] = key.split("-").map(Number);
-  return new Date(y, m - 1, d, 12, 0, 0);
+  const weeksSorted = [...plan.weeks].sort(
+    (a, b) => a.weekNumber - b.weekNumber,
+  );
+
+  type Cand = {
+    week: DashboardWeekInput;
+    startKey: string;
+    endKey: string;
+  };
+
+  const cands: Cand[] = weeksSorted.map((week) => {
+    const { start, end } = weekDateRange(plan.startDate, week.weekNumber);
+    return {
+      week,
+      startKey: todayDateKey(start), // start/end are local-noon calendar Dates
+      endKey: todayDateKey(end),
+    };
+  });
+
+  // Prefer week whose Mon–Sun range includes today
+  let chosen =
+    cands.find((c) => todayKey >= c.startKey && todayKey <= c.endKey) ?? null;
+
+  // Else first week that starts after today
+  if (!chosen) {
+    chosen =
+      cands.find((c) => c.startKey > todayKey) ?? cands[cands.length - 1] ?? null;
+  }
+  if (!chosen) return null;
+
+  const { start, end } = weekDateRange(
+    plan.startDate,
+    chosen.week.weekNumber,
+  );
+
+  const workouts: DisplayWorkout[] = [...chosen.week.workouts]
+    .sort((a, b) => a.dayOfWeek - b.dayOfWeek)
+    .map((wo) => ({
+      ...wo,
+      isToday: wo.dateKey === todayKey,
+      isPast: wo.dateKey < todayKey,
+    }));
+
+  return {
+    weekNumber: chosen.week.weekNumber,
+    focus: chosen.week.focus,
+    rangeLabel: formatWeekRange(start, end),
+    workouts,
+  };
 }
 
-export function DashboardUpcoming({ week }: { week: DashboardWeek | null }) {
-  const [selected, setSelected] = useState<DashboardWorkout | null>(null);
+export function DashboardUpcoming({
+  plan,
+}: {
+  plan: DashboardPlanInput | null;
+}) {
+  const [selected, setSelected] = useState<DisplayWorkout | null>(null);
   const titleId = useId();
+  const todayKey = useLiveTodayKey();
+
+  const week = useMemo(
+    () => (plan ? resolveWeekForToday(plan, todayKey) : null),
+    [plan, todayKey],
+  );
 
   useEffect(() => {
     if (!selected) return;
@@ -57,6 +163,38 @@ export function DashboardUpcoming({ week }: { week: DashboardWeek | null }) {
       document.body.style.overflow = prev;
     };
   }, [selected]);
+
+  // Keep selected sheet flags in sync if midnight passes while open
+  useEffect(() => {
+    setSelected((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        isToday: prev.dateKey === todayKey,
+        isPast: prev.dateKey < todayKey,
+      };
+    });
+  }, [todayKey]);
+
+  if (!plan) {
+    return (
+      <section className="rounded-2xl border border-card-border bg-card/60 p-5">
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold">This week</h2>
+          <Link href="/plan" className="text-xs text-accent hover:underline">
+            Full plan
+          </Link>
+        </div>
+        <p className="text-sm text-muted">
+          No active plan.{" "}
+          <Link href="/chat" className="text-accent hover:underline">
+            Ask the coach
+          </Link>{" "}
+          to build your week.
+        </p>
+      </section>
+    );
+  }
 
   if (!week) {
     return (
@@ -90,6 +228,12 @@ export function DashboardUpcoming({ week }: { week: DashboardWeek | null }) {
               </span>
             </h2>
             <p className="mt-0.5 text-xs text-muted">{week.rangeLabel}</p>
+            <p className="mt-0.5 text-[11px] text-muted">
+              Today ·{" "}
+              <span className="font-medium text-accent">
+                {formatDateKeyLabel(todayKey)}
+              </span>
+            </p>
             {week.focus && (
               <p className="mt-1 text-xs text-accent">{week.focus}</p>
             )}
@@ -121,7 +265,7 @@ export function DashboardUpcoming({ week }: { week: DashboardWeek | null }) {
                   <span className="text-xs font-medium text-muted">
                     {dayName(wo.dayOfWeek)}{" "}
                     <span className="text-muted/80">
-                      {formatShortDate(parseLocalDateKey(wo.dateKey))}
+                      {formatDateKeyLabel(wo.dateKey)}
                     </span>
                     {wo.isToday && (
                       <span className="ml-1.5 rounded-full bg-accent px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-black">
@@ -193,8 +337,8 @@ export function DashboardUpcoming({ week }: { week: DashboardWeek | null }) {
                 </h2>
                 <p className="mt-1 text-sm text-muted">
                   {dayName(selected.dayOfWeek)},{" "}
-                  {formatShortDate(parseLocalDateKey(selected.dateKey))}
-                  {selected.isToday && (
+                  {formatDateKeyLabel(selected.dateKey)}
+                  {selected.dateKey === todayKey && (
                     <span className="ml-2 rounded-full bg-accent px-2 py-0.5 text-[10px] font-bold uppercase text-black">
                       Today
                     </span>
