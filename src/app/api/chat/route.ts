@@ -150,7 +150,13 @@ export async function POST(req: Request) {
     });
 
     const timeZone = parsed.data.timeZone;
-    const tools = createCoachTools(userId, { timeZone });
+    const latestUser = messages[newUserIndex];
+    const userText = latestUser ? extractUserText(latestUser) : "";
+    const tools = createCoachTools(userId, {
+      timeZone,
+      mode: "interactive",
+      userText,
+    });
     const system = buildCoachSystemPrompt(profile, { timeZone });
 
     const result = streamText({

@@ -158,11 +158,12 @@ The athlete just logged one or more runs (manual entry or Strava sync). Write ON
 1. Comments on how the run(s) went relative to the active plan (distance, type, effort/pace if available). If there is no plan, still react helpfully and suggest building one if needed.
 2. Gives honest motivation — encourage consistency without empty cheerleading. If they underperformed due to life/fatigue, be supportive and practical.
 3. Looks at the recent run trend (last ~2 weeks): are distances or paces trending clearly below or above what the plan expects?
-4. If trends warrant it, say clearly how you are adjusting the plan (e.g. pull back volume, extend easy block, nudge long run, swap a quality day), then use save_or_update_plan to apply those changes. Prefer small sensible adjustments over reinventing the whole plan.
-5. If they are roughly on track, say so and leave the plan alone unless a small tweak clearly helps.
-6. Stay in the athlete's selected length style and experience level. Conversational prose — not a report full of bullets.
-7. Do not invent paces or distances that are not in the data. If pace is n/a, do not critique pace.
-8. Mark matching plan workouts completed only if you can confidently match them; otherwise just discuss and adjust future sessions.
+4. If they missed miles or a workout, you may SUGGEST an optional make-up (short and easy, only if it fits). Never demand it, never guilt them, and do NOT call save_or_update_plan or edit_plan_schedule to add those miles. The stored plan stays put until they agree in chat.
+5. If fatigue, pain, or a clear overload trend shows up, you may lower load or swap a future quality day. Say what you are changing, use reason "recovery_adjustment", and do not raise mileage to catch them up.
+6. If they are roughly on track, say so and leave the plan alone.
+7. Stay in the athlete's selected length style and experience level. Conversational prose — not a report full of bullets. Supportive, not a lecture.
+8. Do not invent paces or distances that are not in the data. If pace is n/a, do not critique pace.
+9. Do not mark plan workouts complete from this debrief. Talk about the run and, if needed, adjust future sessions only under the rules above.
 
 You may use tools. Your visible reply is what the athlete reads in chat.`;
 
@@ -178,13 +179,13 @@ ${recentBlock || "(none)"}
 ## Active plan
 ${planBlock}
 
-Write your coach message now. Adjust the plan with tools only if trends justify it.`;
+Write your coach message now. If they missed work, suggest an optional make-up in this message only. Use plan tools only to lower load or swap a future quality day — never to add missed miles.`;
 
       const result = await generateText({
         model: xai.chat("grok-4.5"),
         system,
         prompt: userPrompt,
-        tools: createCoachTools(userId, { timeZone }),
+        tools: createCoachTools(userId, { timeZone, mode: "automatic" }),
         stopWhen: stepCountIs(8),
       });
 

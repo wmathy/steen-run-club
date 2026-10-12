@@ -84,6 +84,10 @@ model TrainingPlan {
   startDate DateTime
   endDate   DateTime?
   notes     String?
+  /// Goal race day. Taper is the taperDays calendar days before this date.
+  raceDate  DateTime?
+  /// Length of the pre-race taper in days. Required with raceDate; must be 10–14.
+  taperDays Int?
   isActive  Boolean   @default(true)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
