@@ -6,6 +6,13 @@ import {
   createEventsFromWorkouts,
   isGoogleConfigured,
 } from "@/lib/google-calendar";
+import { handlePlanSave, handlePlanScheduleEdit } from "@/lib/plan-actions";
+import { dateForPlanSlot } from "@/lib/plan-dates";
+import {
+  activePlanRunningMiles,
+  createPrismaPlanRepository,
+} from "@/lib/plan-repository";
+import type { PlanWriteMode, PlanWriteReason } from "@/lib/plan-policy";
 import {
   isoDateSchema,
   MAX_PLAN_WEEKS,
@@ -18,10 +25,37 @@ import {
 const PROFILE_MAX = 4000;
 const MAX_INACTIVE_PLANS = 10;
 
+const PLAN_WRITE_REASONS = [
+  "new_plan",
+  "athlete_requested",
+  "schedule_edit",
+  "agreed_makeup",
+  "recovery_adjustment",
+] as const satisfies readonly PlanWriteReason[];
+
+const dayRefSchema = z.object({
+  weekNumber: z.number().int().min(1).max(MAX_PLAN_WEEKS),
+  dayOfWeek: z
+    .number()
+    .int()
+    .min(0)
+    .max(6)
+    .describe("0=Monday … 6=Sunday"),
+});
+
 export function createCoachTools(
   userId: string,
-  options?: { timeZone?: string | null },
+  options?: {
+    timeZone?: string | null;
+    /** interactive = athlete is in chat. automatic = post-run debrief with no fresh yes. */
+    mode?: PlanWriteMode;
+    /** Latest athlete message, used to tell a real schedule request from missed work. */
+    userText?: string | null;
+  },
 ) {
+  const mode = options?.mode ?? "interactive";
+  const userText = options?.userText ?? null;
+  const planRepository = createPrismaPlanRepository();
   const clock = getCoachClock(options?.timeZone);
 
   return {
@@ -116,11 +150,14 @@ export function createCoachTools(
             startDate: plan.startDate.toISOString().slice(0, 10),
             endDate: plan.endDate?.toISOString().slice(0, 10) ?? null,
             notes: plan.notes,
+            raceDate: plan.raceDate?.toISOString().slice(0, 10) ?? null,
+            taperDays: plan.taperDays,
             weeks: plan.weeks.map((w) => ({
               weekNumber: w.weekNumber,
               focus: w.focus,
               notes: w.notes,
               workouts: w.workouts.map((wo) => ({
+                id: wo.id,
                 dayOfWeek: wo.dayOfWeek,
                 date: wo.date?.toISOString().slice(0, 10) ?? null,
                 type: wo.type,
@@ -179,7 +216,7 @@ export function createCoachTools(
 
     save_or_update_plan: tool({
       description:
-        "Create or replace the athlete's active structured training plan (weeks + daily workouts).",
+        "Create or replace the athlete's active structured training plan (weeks + daily workouts). Race plans must set raceDate and taperDays (10–14). The server rejects plans that skip the base → build → peak progression, stack hard days, ramp mileage too fast, or use a taper outside 10–14 days. If the tool returns errors, fix them and call it again before telling the athlete the plan is saved. For a move/shift/swap of existing workouts, use edit_plan_schedule instead. Do not call this to add make-up miles for missed work unless the athlete clearly agreed.",
       inputSchema: z.object({
         title: z.string().min(1).max(200),
         goal: z.string().max(1000).optional(),
@@ -187,6 +224,25 @@ export function createCoachTools(
           "ISO date YYYY-MM-DD for week 1 (any day is fine; the plan UI snaps to that week's Monday). Prefer the Monday of the training week when possible.",
         ),
         endDate: isoDateSchema.optional(),
+        raceDate: isoDateSchema
+          .optional()
+          .describe(
+            "Goal race day YYYY-MM-DD. Required for a race plan. The taper is the 10–14 days before this date.",
+          ),
+        taperDays: z
+          .number()
+          .int()
+          .min(10)
+          .max(14)
+          .optional()
+          .describe(
+            "Days of taper before race day, not counting race day. Required with raceDate. Minimum 10, maximum 14.",
+          ),
+        reason: z
+          .enum(PLAN_WRITE_REASONS)
+          .describe(
+            "new_plan or athlete_requested when they asked for a plan. schedule_edit only if a full rewrite is truly required — prefer edit_plan_schedule. agreed_makeup only after an explicit yes. recovery_adjustment to lower load for fatigue or injury. Never use a make-up reason for missed work they have not agreed to.",
+          ),
         notes: z.string().max(4000).optional(),
         replaceActive: z
           .boolean()
@@ -251,6 +307,33 @@ export function createCoachTools(
           .max(MAX_PLAN_WEEKS),
       }),
       execute: async (input) => {
+        const previousRunningMiles =
+          mode === "automatic" ? await activePlanRunningMiles(userId) : null;
+        const decision = handlePlanSave({
+          mode,
+          userText,
+          reason: input.reason,
+          previousRunningMiles,
+          draft: {
+            title: input.title,
+            goal: input.goal,
+            startDate: input.startDate,
+            endDate: input.endDate,
+            notes: input.notes,
+            raceDate: input.raceDate,
+            taperDays: input.taperDays,
+            weeks: input.weeks,
+          },
+        });
+        if (!decision.success) {
+          return {
+            success: false,
+            message: decision.message,
+            issues: decision.issues ?? [],
+          };
+        }
+
+        const prepared = decision.plan;
         const replaceActive = input.replaceActive !== false;
 
         const plan = await prisma.$transaction(async (tx) => {
@@ -279,23 +362,33 @@ export function createCoachTools(
           return tx.trainingPlan.create({
             data: {
               userId,
-              title: input.title,
-              goal: input.goal ?? null,
-              startDate: parseIsoDateAtNoon(input.startDate),
-              endDate: input.endDate
-                ? parseIsoDateAtNoon(input.endDate)
+              title: prepared.title,
+              goal: prepared.goal ?? null,
+              startDate: parseIsoDateAtNoon(prepared.startDate),
+              endDate: prepared.endDate
+                ? parseIsoDateAtNoon(prepared.endDate)
                 : null,
-              notes: input.notes ?? null,
+              raceDate: prepared.raceDate
+                ? parseIsoDateAtNoon(prepared.raceDate)
+                : null,
+              taperDays: prepared.taperDays,
+              notes: prepared.notes ?? null,
               isActive: true,
               weeks: {
-                create: input.weeks.map((w) => ({
+                create: prepared.weeks.map((w) => ({
                   weekNumber: w.weekNumber,
                   focus: w.focus ?? null,
                   notes: w.notes ?? null,
                   workouts: {
                     create: w.workouts.map((wo) => ({
                       dayOfWeek: wo.dayOfWeek,
-                      date: wo.date ? parseIsoDateAtNoon(wo.date) : null,
+                      date: parseIsoDateAtNoon(
+                        dateForPlanSlot(
+                          prepared.startDate,
+                          w.weekNumber,
+                          wo.dayOfWeek,
+                        ),
+                      ),
                       type: wo.type,
                       title: wo.title,
                       description: wo.description ?? null,
@@ -323,8 +416,81 @@ export function createCoachTools(
           planId: plan.id,
           weeks: plan.weeks.length,
           workouts: workoutCount,
-          message: `Saved plan "${plan.title}" with ${plan.weeks.length} weeks / ${workoutCount} workouts.`,
+          raceDate: prepared.raceDate,
+          taperDays: prepared.taperDays,
+          message: `Saved plan "${plan.title}" with ${plan.weeks.length} weeks / ${workoutCount} workouts. ${decision.message}`,
         };
+      },
+    }),
+
+    edit_plan_schedule: tool({
+      description:
+        "Move, swap, or shift workouts on the athlete's stored active plan. Call this whenever they ask to move, shift, swap, switch, or reschedule a workout or a day — then confirm only after it returns success. This writes the Plan tab. Do not only talk about the change. Do not use this to force make-up miles after a missed workout unless they asked to move that workout or clearly agreed.",
+      inputSchema: z.object({
+        operations: z
+          .array(
+            z.discriminatedUnion("op", [
+              z.object({
+                op: z.literal("move"),
+                from: dayRefSchema.extend({
+                  title: z
+                    .string()
+                    .min(1)
+                    .max(200)
+                    .optional()
+                    .describe(
+                      "Exact workout title. Omit to move every workout on that day.",
+                    ),
+                }),
+                toWeekNumber: z.number().int().min(1).max(MAX_PLAN_WEEKS),
+                toDayOfWeek: z.number().int().min(0).max(6),
+              }),
+              z.object({
+                op: z.literal("swap"),
+                a: dayRefSchema,
+                b: dayRefSchema,
+              }),
+              z.object({
+                op: z.literal("shift"),
+                weekNumber: z.number().int().min(1).max(MAX_PLAN_WEEKS),
+                dayOfWeek: z.number().int().min(0).max(6),
+                title: z
+                  .string()
+                  .min(1)
+                  .max(200)
+                  .optional()
+                  .describe(
+                    "Exact workout title. Omit to shift every workout on that day.",
+                  ),
+                days: z
+                  .number()
+                  .int()
+                  .min(-60)
+                  .max(60)
+                  .refine((days) => days !== 0, "days cannot be 0"),
+              }),
+            ]),
+          )
+          .min(1)
+          .max(12),
+      }),
+      execute: async ({ operations }) => {
+        try {
+          return await handlePlanScheduleEdit({
+            repo: planRepository,
+            userId,
+            mode,
+            userText,
+            operations,
+          });
+        } catch (err) {
+          console.error("edit_plan_schedule failed:", err);
+          return {
+            success: false,
+            message:
+              "Couldn't update the plan. Please try that change again.",
+          };
+        }
       },
     }),
 
