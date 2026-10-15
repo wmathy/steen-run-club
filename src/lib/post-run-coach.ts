@@ -18,6 +18,9 @@ export type LoggedRunSummary = {
   notes: string | null;
   perceivedEffort: number | null;
   source: string;
+  stravaActivityId?: string | null;
+  /** Compact device detail for this debrief. Not stored on the run. */
+  stravaReview?: string | null;
 };
 
 function paceMinPerMile(
@@ -71,6 +74,9 @@ function describeRun(run: LoggedRunSummary): string {
   ];
   if (run.perceivedEffort != null) parts.push(`RPE: ${run.perceivedEffort}/10`);
   if (run.notes) parts.push(`Notes: ${run.notes}`);
+  if (run.stravaReview) {
+    parts.push(`Strava workout detail:\n${run.stravaReview}`);
+  }
   return parts.join("\n");
 }
 
@@ -164,6 +170,8 @@ The athlete just logged one or more runs (manual entry or Strava sync). Write ON
 7. Stay in the athlete's selected length style and experience level. Conversational prose — not a report full of bullets. Supportive, not a lecture.
 8. Do not invent paces or distances that are not in the data. If pace is n/a, do not critique pace.
 9. Do not mark plan workouts complete from this debrief. Talk about the run and, if needed, adjust future sessions only under the rules above.
+10. If a run has a "Strava workout detail" block, that block is the device data for the review. Apply the Strava workout detail rules: pace consistency and negative splits, interval execution against the planned workout, heart-rate effort and drift, elevation, and the other recorded fields. Anything marked not recorded stays out of the message. get_recent_runs is only the basic log and does not replace that block.
+11. The detail block is not consent to change the plan. Suggest a make-up if they missed work. Do not write the extra miles into the plan.
 
 You may use tools. Your visible reply is what the athlete reads in chat.`;
 
@@ -179,7 +187,7 @@ ${recentBlock || "(none)"}
 ## Active plan
 ${planBlock}
 
-Write your coach message now. If they missed work, suggest an optional make-up in this message only. Use plan tools only to lower load or swap a future quality day — never to add missed miles.`;
+Write your coach message now. If a Strava workout detail block is present, coach from that detail (pace across the splits, any intervals, heart rate, hills). If they missed work, suggest an optional make-up in this message only. Use plan tools only to lower load or swap a future quality day — never to add missed miles.`;
 
       const result = await generateText({
         model: xai.chat("grok-4.5"),

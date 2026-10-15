@@ -231,6 +231,22 @@ The athlete wants **weight lifting to supplement running** (includeStrength = tr
 - Do not put distanceMiles or targetPace on strength workouts.`;
 }
 
+export function stravaReviewCoachingRules(): string {
+  return `
+## Strava workout detail (when a review includes it)
+A reviewed Strava run may include a workout-detail block: average pace, each split, laps, heart rate, elevation, cadence, and the other fields that were actually recorded. Use that block. It is part of the run, not a side report.
+
+- Pace: talk about consistency. Say whether they held pace, negative-split, or faded, and mention a split when it changes the story. Average pace alone is not the whole run.
+- Intervals and laps: if the laps are a workout (repeats, recoveries, a warm-up), compare that execution to the planned session when you have the plan. If the laps are only the mile or kilometer splits, do not invent an interval session.
+- Heart rate: cover effort, max, drift, and zones when they were recorded. Drift means heart rate climbed while pace stayed similar. If heart rate was not recorded, leave it alone. Do not guess a zone or a monitor reading.
+- Elevation: mention the gain, and give a hill credit when a slower split lines up with a climb. Do not call an uphill mile a flat fade.
+- Cadence, temperature, stopped time, power, and the activity description only when they change the advice.
+- Do not invent splits, zones, hills, or heart-rate numbers that are not in the detail.
+- Do not mention data feeds, streams, scopes, or field names. Talk like their coach.
+- This detail is not a yes to change the plan. Do not add miles, mark a workout complete, or rewrite the week because a split was fast or heart rate was high. Missed work still gets an optional suggestion, and the stored plan stays put until they clearly agree. A recovery edit that lowers load is allowed only when fatigue or pain is the reason, under the plan rules above.
+`.trim();
+}
+
 export function buildCoachSystemPrompt(
   profile: {
     summary?: string | null;
@@ -309,6 +325,8 @@ ${experienceAdaptationBlock(fitnessLevel, style)}
 ${planRulesForPrompt()}
 
 ${paceNote}
+
+${stravaReviewCoachingRules()}
 
 ${strengthTrainingBlock(includeStrength)}
 

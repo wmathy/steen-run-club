@@ -8,6 +8,7 @@ import { withUserLock } from "@/lib/mutex";
 import { formatMiles, workoutDateKey } from "@/lib/utils";
 import { DEFAULT_COACH_TIME_ZONE } from "@/lib/clock";
 import {
+  attachStravaReviews,
   isStravaConfigured,
   syncStravaRunsForUser,
 } from "@/lib/strava";
@@ -122,6 +123,20 @@ export async function generatePlanWorkoutCheckIn(
       });
 
       const matchingRuns = dayRuns.filter((r) => runDateKey(r.date) === dateIso);
+      let reviewedRuns = matchingRuns.map((run) => ({
+        ...run,
+        stravaReview: null as string | null,
+      }));
+      try {
+        reviewedRuns = await attachStravaReviews(userId, reviewedRuns, {
+          onlyDebrief: false,
+        });
+      } catch (err) {
+        console.warn(
+          "[plan-checkin] Strava workout detail skipped:",
+          err instanceof Error ? err.message : "unavailable",
+        );
+      }
 
       const profile = await prisma.coachProfile.findUnique({
         where: { userId },
@@ -152,18 +167,20 @@ export async function generatePlanWorkoutCheckIn(
         .join("\n");
 
       const runsBlock =
-        matchingRuns.length === 0
+        reviewedRuns.length === 0
           ? "No logged run found for this calendar day (Strava or manual). Ask how it went if needed."
-          : matchingRuns
+          : reviewedRuns
               .map((r) => {
                 const pace = paceMinPerMile(r.distanceMiles, r.durationMin);
-                return [
+                const basic =
                   `- ${runDateKey(r.date)} · ${formatMiles(r.distanceMiles)}` +
-                    (r.durationMin != null ? ` · ${r.durationMin} min` : "") +
-                    ` · ${formatPace(pace)} · ${r.type} · source=${r.source}` +
-                    (r.perceivedEffort != null ? ` · RPE ${r.perceivedEffort}/10` : "") +
-                    (r.notes ? ` · notes: ${r.notes}` : ""),
-                ].join("");
+                  (r.durationMin != null ? ` · ${r.durationMin} min` : "") +
+                  ` · ${formatPace(pace)} · ${r.type} · source=${r.source}` +
+                  (r.perceivedEffort != null ? ` · RPE ${r.perceivedEffort}/10` : "") +
+                  (r.notes ? ` · notes: ${r.notes}` : "");
+                return r.stravaReview
+                  ? `${basic}\nStrava workout detail:\n${r.stravaReview}`
+                  : basic;
               })
               .join("\n");
 
@@ -181,9 +198,11 @@ The athlete just marked a planned workout from the Plan tab. Write ONE conversat
 ### Rules
 1. Sound like a real running coach texting them — warm, specific, not a report.
 2. Use the matched run data when present (distance, pace, source). Prefer Strava when available. Do not invent paces or distances.
-3. Stay in their coaching style length/voice.
-4. One message only. End ready for a reply if you asked a question.
-5. Do not mention tools, APIs, or "checking Strava" as a system — you can say "looking at what you logged" naturally if needed.`;
+3. If a run has a "Strava workout detail" block, that is the device data. Apply the Strava workout detail rules: pace consistency and negative splits, how any intervals compared with this planned workout, heart-rate effort and drift, and whether elevation explains a slower stretch. Skip whatever the block says was not recorded.
+4. Stay in their coaching style length/voice. Encouraging, not a dictator.
+5. One message only. End ready for a reply if you asked a question.
+6. Do not mention tools, APIs, or "checking Strava" as a system — you can say "looking at what you logged" naturally if needed.
+7. This check-in still does not edit the stored plan. Detail in the run is not consent to add miles or rewrite the week.`;
 
       const userPrompt = `Plan day check-in:
 
@@ -193,7 +212,7 @@ ${plannedBlock}
 ## Matching run log for ${dateIso}
 ${runsBlock}
 
-Write your coach message now.`;
+Write your coach message now. If a Strava workout detail block is present, coach from that detail against the planned workout.`;
 
       // No tools: all plan + run context is already in the prompt. Tools-only
       // model turns can leave result.text empty and drop the coach message.
