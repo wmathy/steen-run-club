@@ -3,8 +3,10 @@ import { decryptSecret, encryptSecret } from "@/lib/crypto-tokens";
 import { withUserLock } from "@/lib/mutex";
 import {
   schedulePostRunCoachFeedback,
+  shouldDebriefRun,
   type LoggedRunSummary,
 } from "@/lib/post-run-coach";
+import { fetchStravaActivityReview } from "@/lib/strava-review";
 
 const STRAVA_AUTH = "https://www.strava.com/oauth/authorize";
 const STRAVA_TOKEN = "https://www.strava.com/oauth/token";
@@ -276,6 +278,7 @@ export async function importStravaActivityForUser(
         notes: run.notes,
         perceivedEffort: run.perceivedEffort,
         source: run.source,
+        stravaActivityId,
       },
     };
   }
@@ -303,8 +306,63 @@ export async function importStravaActivityForUser(
       notes: run.notes,
       perceivedEffort: run.perceivedEffort,
       source: run.source,
+      stravaActivityId,
     },
   };
+}
+
+/**
+ * Fetch laps, splits, streams, and zones for runs the coach is about to
+ * review. Missing sensors are summarized as not recorded. Tokens stay in the
+ * request header.
+ */
+export async function attachStravaReviews<T extends LoggedRunSummary>(
+  userId: string,
+  runs: T[],
+  options?: {
+    fallbackById?: ReadonlyMap<string, unknown>;
+    /** Default true: only runs new enough to debrief. Check-in passes false. */
+    onlyDebrief?: boolean;
+  },
+): Promise<Array<T & { stravaReview?: string | null }>> {
+  const onlyDebrief = options?.onlyDebrief !== false;
+  const ids = [
+    ...new Set(
+      runs
+        .filter((run) => run.stravaActivityId && (!onlyDebrief || shouldDebriefRun(run)))
+        .map((run) => run.stravaActivityId as string),
+    ),
+  ];
+  if (!ids.length) return runs;
+
+  let accessToken: string;
+  try {
+    accessToken = await getValidStravaAccessToken(userId);
+  } catch (err) {
+    console.warn(
+      "[strava] workout detail unavailable:",
+      err instanceof Error ? err.message : "unavailable",
+    );
+    return runs;
+  }
+
+  const reviews = new Map<string, string>();
+  for (const id of ids) {
+    const text = await fetchStravaActivityReview(
+      accessToken,
+      id,
+      options?.fallbackById?.get(id),
+    );
+    if (text) reviews.set(id, text);
+  }
+  if (!reviews.size) return runs;
+
+  return runs.map((run) => {
+    const review = run.stravaActivityId
+      ? reviews.get(run.stravaActivityId)
+      : undefined;
+    return review ? { ...run, stravaReview: review } : run;
+  });
 }
 
 async function fetchActivity(
@@ -372,6 +430,9 @@ export async function syncStravaRunsForUser(
     }
 
     const activities = await listRecentActivities(accessToken, afterUnix, 50);
+    const fallbackById = new Map<string, unknown>(
+      activities.map((activity) => [String(activity.id), activity]),
+    );
     let created = 0;
     let updated = 0;
     let skipped = 0;
@@ -393,9 +454,13 @@ export async function syncStravaRunsForUser(
 
     if (createdRuns.length > 0) {
       await notifyCoachOfStravaRuns(userId, createdRuns);
-      // One coach debrief for all newly created, recent runs (avoids chat flood)
+      // One coach debrief for all newly created, recent runs (avoids chat flood).
+      // Detail (laps, splits, streams, zones) is loaded here, not stored.
       if (!options?.skipCoachDebrief) {
-        await schedulePostRunCoachFeedback(userId, createdRuns);
+        const withDetail = await attachStravaReviews(userId, createdRuns, {
+          fallbackById,
+        });
+        await schedulePostRunCoachFeedback(userId, withDetail);
       }
     }
 
@@ -440,7 +505,10 @@ export async function importStravaActivityById(
 
     if (result.status === "created") {
       await notifyCoachOfStravaRuns(conn.userId, [result.run]);
-      await schedulePostRunCoachFeedback(conn.userId, [result.run]);
+      const withDetail = await attachStravaReviews(conn.userId, [result.run], {
+        fallbackById: new Map([[String(activityId), activity]]),
+      });
+      await schedulePostRunCoachFeedback(conn.userId, withDetail);
     }
   });
 }
