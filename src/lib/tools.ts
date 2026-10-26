@@ -7,7 +7,7 @@ import {
   isGoogleConfigured,
 } from "@/lib/google-calendar";
 import { handlePlanSave, handlePlanScheduleEdit } from "@/lib/plan-actions";
-import { dateForPlanSlot } from "@/lib/plan-dates";
+import { workoutIsoDate } from "@/lib/plan-rules";
 import {
   activePlanRunningMiles,
   createPrismaPlanRepository,
@@ -24,6 +24,60 @@ import {
 
 const PROFILE_MAX = 4000;
 const MAX_INACTIVE_PLANS = 10;
+
+export const SAVE_PLAN_WEEKS_REQUIRED =
+  "You must include the non-empty `weeks` array containing each week and its `workouts` in the same `save_or_update_plan` call.";
+
+const workoutInputSchema = z.object({
+  dayOfWeek: z
+    .number()
+    .int()
+    .min(0)
+    .max(6)
+    .describe("0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday, 5=Saturday, 6=Sunday"),
+  date: isoDateSchema
+    .optional()
+    .describe(
+      "YYYY-MM-DD for this slot. Set this on race day to raceDate. A valid date is kept even if dayOfWeek is off.",
+    ),
+  type: workoutTypeSchema,
+  title: z.string().min(1).max(200),
+  description: z
+    .string()
+    .max(4000)
+    .optional()
+    .describe(
+      "1-2 sentences: warm-up, main set, cool-down, and effort. Strength: one short sets×reps line per exercise. Keep it short so 10 weeks fit in one call.",
+    ),
+  distanceMiles: z
+    .number()
+    .finite()
+    .positive()
+    .max(300)
+    .optional()
+    .describe("Distance in miles (running only; omit for strength/rest)"),
+  durationMin: z
+    .number()
+    .finite()
+    .positive()
+    .max(24 * 60)
+    .optional()
+    .describe("Duration in minutes. Strength sessions should be 30–45."),
+  targetPace: z
+    .string()
+    .max(80)
+    .optional()
+    .describe(
+      'Suggested pace as min/mi for runs, e.g. "9:30/mi". Omit for strength/rest.',
+    ),
+});
+
+const weekInputSchema = z.object({
+  weekNumber: z.number().int().min(1).max(MAX_PLAN_WEEKS),
+  focus: z.string().max(500).optional(),
+  notes: z.string().max(2000).optional(),
+  workouts: z.array(workoutInputSchema).max(MAX_WORKOUTS_PER_WEEK),
+});
 
 const PLAN_WRITE_REASONS = [
   "new_plan",
@@ -216,7 +270,7 @@ export function createCoachTools(
 
     save_or_update_plan: tool({
       description:
-        "Create or replace the athlete's active structured training plan (weeks + daily workouts). Race plans must set raceDate and taperDays (10–14). The server rejects plans that skip the base → build → peak progression, stack hard days, ramp mileage too fast, or use a taper outside 10–14 days. If the tool returns errors, fix them and call it again before telling the athlete the plan is saved. For a move/shift/swap of existing workouts, use edit_plan_schedule instead. Do not call this to add make-up miles for missed work unless the athlete clearly agreed.",
+        "Create or replace the athlete's full training plan in one call. weeks is required: include every week and its workouts in this same call, with each workout description kept to 1-2 sentences (warm-up, main set, cool-down). A missing or empty weeks array is not saved. dayOfWeek is 0=Monday through 6=Sunday (Friday is 4). Race plans must set raceDate, taperDays (10-14), and a type race workout on that date (set date to raceDate). The server rejects plans that skip base → build → peak, stack hard days, ramp mileage too fast, or use a taper outside 10-14 days. If the tool returns errors, fix them and call again with the full weeks array before telling the athlete the plan is saved. For a move/shift/swap of existing workouts, use edit_plan_schedule instead. Do not call this to add make-up miles for missed work unless the athlete clearly agreed.",
       inputSchema: z.object({
         title: z.string().min(1).max(200),
         goal: z.string().max(1000).optional(),
@@ -227,7 +281,7 @@ export function createCoachTools(
         raceDate: isoDateSchema
           .optional()
           .describe(
-            "Goal race day YYYY-MM-DD. Required for a race plan. The taper is the 10–14 days before this date.",
+            "Goal race day YYYY-MM-DD. Required for a race plan. The taper is the 10–14 days before this date. Also set that day's workout date to this value.",
           ),
         taperDays: z
           .number()
@@ -249,64 +303,22 @@ export function createCoachTools(
           .optional()
           .describe("If true (default), deactivate previous active plans"),
         weeks: z
-          .array(
-            z.object({
-              weekNumber: z.number().int().min(1).max(MAX_PLAN_WEEKS),
-              focus: z.string().max(500).optional(),
-              notes: z.string().max(2000).optional(),
-              workouts: z
-                .array(
-                  z.object({
-                    dayOfWeek: z
-                      .number()
-                      .int()
-                      .min(0)
-                      .max(6)
-                      .describe("0=Monday … 6=Sunday"),
-                    date: isoDateSchema.optional(),
-                    type: workoutTypeSchema,
-                    title: z.string().min(1).max(200),
-                    description: z
-                      .string()
-                      .max(4000)
-                      .optional()
-                      .describe(
-                        "Full workout detail. Runs: structure, cues, warm-up/cool-down, effort feel. Strength: list each exercise with sets×reps (e.g. Romanian deadlift 3×8), warm-up/cool-down; session 30–45 min.",
-                      ),
-                    distanceMiles: z
-                      .number()
-                      .finite()
-                      .positive()
-                      .max(300)
-                      .optional()
-                      .describe(
-                        "Distance in miles (running only; omit for strength/rest)",
-                      ),
-                    durationMin: z
-                      .number()
-                      .finite()
-                      .positive()
-                      .max(24 * 60)
-                      .optional()
-                      .describe(
-                        "Duration in minutes. Strength sessions should be 30–45.",
-                      ),
-                    targetPace: z
-                      .string()
-                      .max(80)
-                      .optional()
-                      .describe(
-                        'Suggested pace as min/mi for runs, e.g. "9:30/mi". Omit for strength/rest.',
-                      ),
-                  }),
-                )
-                .max(MAX_WORKOUTS_PER_WEEK),
-            }),
-          )
-          .min(1)
-          .max(MAX_PLAN_WEEKS),
+          .array(weekInputSchema)
+          .max(MAX_PLAN_WEEKS)
+          .optional()
+          .describe(
+            "REQUIRED. Every week and its workouts, in this same call. Keep workout descriptions to 1-2 sentences. Missing or empty is rejected without saving.",
+          ),
       }),
       execute: async (input) => {
+        if (!input.weeks || input.weeks.length === 0) {
+          return {
+            success: false as const,
+            error: SAVE_PLAN_WEEKS_REQUIRED,
+            message: SAVE_PLAN_WEEKS_REQUIRED,
+          };
+        }
+        const weeks = input.weeks;
         const previousRunningMiles =
           mode === "automatic" ? await activePlanRunningMiles(userId) : null;
         const decision = handlePlanSave({
@@ -322,7 +334,7 @@ export function createCoachTools(
             notes: input.notes,
             raceDate: input.raceDate,
             taperDays: input.taperDays,
-            weeks: input.weeks,
+            weeks,
           },
         });
         if (!decision.success) {
@@ -383,11 +395,7 @@ export function createCoachTools(
                     create: w.workouts.map((wo) => ({
                       dayOfWeek: wo.dayOfWeek,
                       date: parseIsoDateAtNoon(
-                        dateForPlanSlot(
-                          prepared.startDate,
-                          w.weekNumber,
-                          wo.dayOfWeek,
-                        ),
+                        workoutIsoDate(prepared.startDate, w.weekNumber, wo),
                       ),
                       type: wo.type,
                       title: wo.title,
@@ -404,7 +412,7 @@ export function createCoachTools(
               weeks: { include: { workouts: true } },
             },
           });
-        });
+        }, { maxWait: 10_000, timeout: 25_000 });
 
         const workoutCount = plan.weeks.reduce(
           (n, w) => n + w.workouts.length,

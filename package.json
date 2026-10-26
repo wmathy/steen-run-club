@@ -7,7 +7,7 @@
     "build": "prisma generate && node scripts/db-push.mjs && next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx --test src/lib/plan-rules.test.ts src/lib/plan-edit.test.ts src/lib/plan-policy.test.ts src/lib/strava-review.test.ts src/lib/coach-errors.test.ts src/lib/coach-message-display.test.tsx",
+    "test": "tsx --test src/lib/plan-rules.test.ts src/lib/plan-edit.test.ts src/lib/plan-policy.test.ts src/lib/strava-review.test.ts src/lib/coach-errors.test.ts src/lib/coach-message-display.test.tsx src/lib/tools-plan.test.ts",
     "postinstall": "prisma generate",
     "db:push": "prisma db push",
     "db:studio": "prisma studio"
