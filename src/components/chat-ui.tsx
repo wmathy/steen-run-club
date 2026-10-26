@@ -4,28 +4,12 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AppLogo } from "@/components/app-logo";
+import { CoachMessageList } from "@/components/coach-message-list";
 import { coachErrorMessage } from "@/lib/coach-errors";
-import { cn } from "@/lib/utils";
-
-/** Coaching text only — hide tool calls, empty parts, and internal meta. */
-function coachingTextFromMessage(message: UIMessage): string {
-  const chunks: string[] = [];
-  for (const part of message.parts ?? []) {
-    if (part.type === "text" && "text" in part && typeof part.text === "string") {
-      const t = part.text.trim();
-      if (t) chunks.push(t);
-    }
-  }
-  return chunks.join("\n\n").trim();
-}
-
-function MessageParts({ text }: { text: string }) {
-  return (
-    <div className="prose-chat whitespace-pre-wrap text-[15px] leading-relaxed sm:text-sm">
-      {text}
-    </div>
-  );
-}
+import {
+  isCoachReplyPending,
+  messagesToDisplay,
+} from "@/lib/coach-message-display";
 
 /** How close to the bottom counts as "following" the stream (px). */
 const STICK_BOTTOM_THRESHOLD = 120;
@@ -37,7 +21,7 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  /** When true, new stream chunks keep the view pinned to the bottom */
+  /** When true, the latest coach bubble stays pinned to the bottom */
   const stickToBottomRef = useRef(true);
 
   function isNearBottom(el: HTMLDivElement): boolean {
@@ -93,7 +77,14 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
     messages: initialMessages,
     transport,
     onFinish: async ({ messages: finished, isError, isAbort }) => {
-      if (isError || isAbort) return;
+      if (isAbort) return;
+      if (isError) {
+        // The stream failed before a complete reply. Drop the partial
+        // assistant message so the next send cannot reveal it as history.
+        // The error banner (including xAI credit failures) is the result.
+        setMessages(messagesToDisplay(finished, "error"));
+        return;
+      }
 
       const clientCount = finished.length;
       const lastUser = [...finished].reverse().find((m) => m.role === "user");
@@ -141,13 +132,15 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
   // Auto-follow only if the user hasn't scrolled up to read earlier text
   useEffect(() => {
     if (!stickToBottomRef.current) return;
-    // Instant scroll during stream so we don't fight touch gestures with "smooth"
-    const behavior: ScrollBehavior =
-      status === "streaming" || status === "submitted" ? "auto" : "smooth";
+    // Instant scroll while a reply is still pending so we don't fight touch
+    // gestures with "smooth". The bubble itself appears in one shot.
+    const behavior: ScrollBehavior = isCoachReplyPending(status)
+      ? "auto"
+      : "smooth";
     requestAnimationFrame(() => scrollToBottom(behavior));
   }, [messages, status]);
 
-  const busy = status === "submitted" || status === "streaming";
+  const busy = isCoachReplyPending(status);
 
   function submitMessage() {
     const text = input.trim();
@@ -231,45 +224,7 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
           </div>
         )}
 
-        {messages.map((message) => {
-          const text = coachingTextFromMessage(message);
-          if (!text) return null;
-          return (
-            <div
-              key={message.id}
-              className={cn(
-                "flex",
-                message.role === "user" ? "justify-end" : "justify-start",
-              )}
-            >
-              <div
-                className={cn(
-                  "max-w-[min(100%,36rem)] rounded-2xl px-3.5 py-2.5 shadow-sm sm:px-4 sm:py-3",
-                  message.role === "user"
-                    ? "bg-user-bubble text-foreground"
-                    : "border border-card-border bg-assistant-bubble",
-                )}
-              >
-                {message.role === "assistant" && (
-                  <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-accent">
-                    Steen
-                  </div>
-                )}
-                <MessageParts text={text} />
-              </div>
-            </div>
-          );
-        })}
-
-        {busy && (
-          <div className="flex justify-start">
-            <div className="flex items-center gap-1.5 rounded-2xl border border-card-border bg-assistant-bubble px-4 py-3">
-              <span className="typing-dot h-1.5 w-1.5 rounded-full bg-accent" />
-              <span className="typing-dot h-1.5 w-1.5 rounded-full bg-accent" />
-              <span className="typing-dot h-1.5 w-1.5 rounded-full bg-accent" />
-            </div>
-          </div>
-        )}
+        <CoachMessageList messages={messages} status={status} />
 
         {error && (
           <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">

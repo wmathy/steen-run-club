@@ -168,6 +168,9 @@ export async function POST(req: Request) {
       stopWhen: stepCountIs(8),
     });
 
+    // The chat UI holds assistant text until this stream finishes.
+    // Keep streaming so tool steps, onError (xAI credits), and onEnd
+    // persistence all finish before that bubble is shown.
     return createUIMessageStreamResponse({
       stream: toUIMessageStream({
         stream: result.stream,
