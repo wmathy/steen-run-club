@@ -4,6 +4,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AppLogo } from "@/components/app-logo";
+import { coachErrorMessage } from "@/lib/coach-errors";
 import { cn } from "@/lib/utils";
 
 /** Coaching text only — hide tool calls, empty parts, and internal meta. */
@@ -272,7 +273,7 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
 
         {error && (
           <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
-            Coach is temporarily unavailable. Please try again in a moment.
+            {coachErrorMessage(error)}
           </div>
         )}
 
