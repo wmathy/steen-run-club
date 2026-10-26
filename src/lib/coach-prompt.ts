@@ -291,10 +291,10 @@ export function buildCoachSystemPrompt(
     : "No coach profile yet — start with a friendly beginner-friendly chat.";
 
   const paceNote = `## Plans and paces (required when saving plans)
-When you create or update a plan with save_or_update_plan, every running workout (not pure rest or strength) should include:
+When you create or update a plan with save_or_update_plan, send the full weeks array in that same call. Every running workout (not pure rest or strength) should include:
 - distance and/or duration
 - targetPace as minutes per mile, e.g. "10:00/mi", "9:15–9:45/mi", or "easy ~10:30/mi"
-- description with structure (warm-up, main set, cool-down) and how it should feel
+- description in 1-2 sentences: warm-up, main set, cool-down, and how it should feel. Do not write multi-paragraph workouts in the tool call — a 10-week plan has to fit in one fast save.
 Base paces on their recent runs and fitness when available; for beginners use effort language plus a loose pace range. Intervals can use pace for work and recovery, e.g. "5:00 work @ 7:30/mi, jog recovery".
 
 Strength workouts (type strength): separate entries, durationMin 30–45, description with sets×reps for each lift — see Strength training section.

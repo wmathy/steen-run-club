@@ -1,12 +1,20 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { dateForPlanSlot, mondayOf } from "@/lib/plan-dates";
-import type { PlanDraft, PlanWeekDraft, PlanWorkoutDraft } from "@/lib/plan-model";
+import { buildCoachSystemPrompt } from "@/lib/coach-prompt";
+import {
+  EASY_TYPES,
+  RUNNING_TYPES,
+  type PlanDraft,
+  type PlanWeekDraft,
+  type PlanWorkoutDraft,
+} from "@/lib/plan-model";
 import {
   MAX_TAPER_DAYS,
   MIN_TAPER_DAYS,
   phaseOnDate,
   phaseSpans,
+  planRulesForPrompt,
   preparePlanForSave,
 } from "@/lib/plan-rules";
 import { handlePlanSave } from "@/lib/plan-actions";
@@ -288,5 +296,246 @@ describe("missed-work saves", () => {
     });
     assert.equal(result.success, false);
     if (!result.success) assert.match(result.message, /make-up/i);
+  });
+});
+
+function runningEasyShare(week: PlanWeekDraft): number {
+  let miles = 0;
+  let easy = 0;
+  for (const item of week.workouts) {
+    const distance = item.distanceMiles ?? 0;
+    if (!RUNNING_TYPES.has(item.type) || !(distance > 0)) continue;
+    miles += distance;
+    if (EASY_TYPES.has(item.type)) easy += distance;
+  }
+  return miles === 0 ? 1 : easy / miles;
+}
+
+/**
+ * Low-volume, high-intensity 5K block. Quality miles include the warm-up
+ * and cool-down, so easy share sits near 60% — under the 75% coaching
+ * target, and previously rejected.
+ * Race day is sent as dayOfWeek 5 (Saturday) with date 2027-01-01 (Friday).
+ */
+function sub18FiveKPlan(): PlanDraft {
+  const quality = (
+    weekNumber: number,
+    mon: number,
+    interval: number,
+    wed: number,
+    tempo: number,
+    long: number,
+  ): PlanWeekDraft => ({
+    weekNumber,
+    workouts: [
+      workout(0, "easy", `Easy ${weekNumber}`, mon),
+      workout(1, "interval", `Intervals ${weekNumber}`, interval),
+      workout(2, "easy", `Easy ${weekNumber} mid`, wed),
+      workout(3, "tempo", `Tempo ${weekNumber}`, tempo),
+      workout(5, "long", `Long ${weekNumber}`, long),
+    ],
+  });
+
+  return {
+    title: "5K Sub-18 Block",
+    goal: "5K under 18:00 by Jan 1 2027, less volume and more intensity",
+    startDate: "2026-10-26",
+    endDate: "2027-01-01",
+    raceDate: "2027-01-01",
+    taperDays: 12,
+    weeks: [
+      quality(1, 3, 4, 3, 4, 6),
+      quality(2, 4, 4, 3, 4, 6),
+      quality(3, 4, 4, 3, 4, 6),
+      quality(4, 4, 4, 3, 4, 7),
+      quality(5, 4, 4, 3, 4, 7),
+      quality(6, 4, 4, 3, 4, 7),
+      quality(7, 4, 4, 4, 4, 8),
+      {
+        weekNumber: 8,
+        workouts: [
+          ...quality(8, 3, 4, 3, 4, 6).workouts,
+          workout(6, "easy", "Taper shakeout 8", 3),
+        ],
+      },
+      {
+        weekNumber: 9,
+        workouts: [
+          workout(0, "easy", "Taper easy 9", 3),
+          workout(2, "easy", "Taper easy 9 mid", 3),
+          workout(4, "easy", "Taper easy 9 fri", 3),
+        ],
+      },
+      {
+        weekNumber: 10,
+        workouts: [
+          workout(0, "easy", "Taper easy 10", 2),
+          workout(2, "easy", "Taper easy 10 mid", 2),
+          {
+            ...workout(5, "race", "5K", 3.1),
+            date: "2027-01-01",
+          },
+        ],
+      },
+    ],
+  };
+}
+
+describe("low-volume 5K block", () => {
+  it("accepts a 10-week sub-18 plan from 2026-10-26 to 2027-01-01 on the first pass", () => {
+    const draft = sub18FiveKPlan();
+    assert.ok(runningEasyShare(draft.weeks[0]!) < 0.75);
+    assert.ok(runningEasyShare(draft.weeks[0]!) >= 0.5);
+
+    const result = preparePlanForSave(draft);
+    assert.equal(
+      result.ok,
+      true,
+      result.ok ? "" : result.issues.map((issue) => issue.message).join("\n"),
+    );
+    if (!result.ok) return;
+    assert.equal(result.plan.raceDate, "2027-01-01");
+    assert.equal(result.plan.taperDays, 12);
+    assert.equal(result.plan.startDate, "2026-10-26");
+    const race = result.plan.weeks
+      .flatMap((week) => week.workouts)
+      .find((item) => item.type === "race");
+    assert.equal(race?.date, "2027-01-01");
+    assert.equal(race?.dayOfWeek, 4);
+  });
+
+  it("allows a modest mileage dip from base into build", () => {
+    const draft: PlanDraft = {
+      title: "Modest dip",
+      startDate: "2026-08-03",
+      raceDate: "2026-09-13",
+      taperDays: 14,
+      weeks: [
+        {
+          weekNumber: 1,
+          workouts: [
+            workout(0, "easy", "Easy 1a", 8),
+            workout(2, "easy", "Easy 1b", 6),
+            workout(5, "long", "Long 1", 6),
+          ],
+        },
+        {
+          weekNumber: 2,
+          workouts: [
+            workout(2, "easy", "Easy 2a", 6),
+            workout(4, "easy", "Easy 2b", 6),
+            workout(5, "long", "Long 2", 6),
+          ],
+        },
+        {
+          weekNumber: 3,
+          workouts: [
+            workout(0, "easy", "Easy 3a", 5),
+            workout(2, "easy", "Easy 3b", 5),
+            workout(5, "long", "Long 3", 6),
+          ],
+        },
+        {
+          weekNumber: 4,
+          workouts: [
+            workout(0, "easy", "Easy 4a", 6),
+            workout(2, "easy", "Easy 4b", 6),
+            workout(5, "long", "Long 4", 6),
+            workout(6, "easy", "Taper sun", 3),
+          ],
+        },
+        {
+          weekNumber: 5,
+          workouts: [
+            workout(0, "easy", "Shake 5a", 3),
+            workout(2, "easy", "Shake 5b", 3),
+            workout(4, "easy", "Shake 5c", 3),
+          ],
+        },
+        {
+          weekNumber: 6,
+          workouts: [
+            workout(0, "easy", "Shake 6a", 3),
+            workout(2, "easy", "Shake 6b", 3),
+            workout(4, "easy", "Shake 6c", 2),
+            workout(6, "race", "Goal race", 3.1),
+          ],
+        },
+      ],
+    };
+    const result = preparePlanForSave(draft);
+    assert.equal(
+      result.ok,
+      true,
+      result.ok ? "" : result.issues.map((issue) => issue.message).join("\n"),
+    );
+  });
+
+  it("still rejects a build that collapses far under the base", () => {
+    const draft: PlanDraft = {
+      title: "Collapsed build",
+      startDate: "2026-08-03",
+      raceDate: "2026-09-13",
+      taperDays: 14,
+      weeks: [
+        {
+          weekNumber: 1,
+          workouts: [
+            workout(0, "easy", "Easy 1a", 8),
+            workout(2, "easy", "Easy 1b", 6),
+            workout(5, "long", "Long 1", 6),
+          ],
+        },
+        {
+          weekNumber: 2,
+          workouts: [
+            workout(2, "easy", "Easy 2", 3),
+            workout(5, "long", "Long 2", 3),
+          ],
+        },
+        {
+          weekNumber: 3,
+          workouts: [
+            workout(0, "easy", "Easy 3", 3),
+            workout(5, "long", "Long 3", 3),
+          ],
+        },
+        {
+          weekNumber: 4,
+          workouts: [
+            workout(0, "easy", "Easy 4", 3),
+            workout(5, "long", "Long 4", 3),
+            workout(6, "easy", "Taper sun", 2),
+          ],
+        },
+        {
+          weekNumber: 5,
+          workouts: [
+            workout(0, "easy", "Shake 5a", 2),
+            workout(2, "easy", "Shake 5b", 2),
+          ],
+        },
+        {
+          weekNumber: 6,
+          workouts: [
+            workout(0, "easy", "Shake 6", 2),
+            workout(6, "race", "Goal race", 3.1),
+          ],
+        },
+      ],
+    };
+    assert.ok(codes(draft).includes("phase_load"));
+  });
+});
+
+describe("plan save instructions", () => {
+  it("keeps the 75% easy guidance and tells the coach to send weeks in one call", () => {
+    const rules = planRulesForPrompt();
+    assert.match(rules, /75/);
+    assert.match(rules, /non-empty weeks array/);
+    assert.match(rules, /1-2 sentences/);
+    const prompt = buildCoachSystemPrompt(null);
+    assert.match(prompt, /1-2 sentences/);
+    assert.match(prompt, /75/);
   });
 });

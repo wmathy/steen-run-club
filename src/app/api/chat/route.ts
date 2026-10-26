@@ -24,7 +24,8 @@ import {
 } from "@/lib/validation";
 import { coachErrorMessage } from "@/lib/coach-errors";
 
-export const maxDuration = 60;
+// Fluid Compute allows up to 300s. A 10-week plan save can run past 60s.
+export const maxDuration = 300;
 
 function extractUserText(message: UIMessage): string {
   if (!message.parts?.length) return "";
