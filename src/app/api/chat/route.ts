@@ -22,6 +22,7 @@ import {
   MAX_CHAT_MESSAGES,
   MAX_CHAT_TEXT_CHARS,
 } from "@/lib/validation";
+import { coachErrorMessage } from "@/lib/coach-errors";
 
 export const maxDuration = 60;
 
@@ -171,6 +172,13 @@ export async function POST(req: Request) {
       stream: toUIMessageStream({
         stream: result.stream,
         originalMessages: messages,
+        // The SDK's default onError redacts stream failures to
+        // "An error occurred.", which hides xAI credit exhaustion.
+        // Map that case explicitly and keep every other detail off the client.
+        onError: (error) => {
+          console.error("Chat stream error:", error);
+          return coachErrorMessage(error);
+        },
         onEnd: async ({ messages: finalMessages }) => {
           try {
             // Persist this turn only: new user message + following assistants.
@@ -215,7 +223,7 @@ export async function POST(req: Request) {
     }
     console.error("Chat error:", err);
     return Response.json(
-      { error: "Coach is temporarily unavailable. Please try again." },
+      { error: coachErrorMessage(err) },
       { status: 500 },
     );
   }
