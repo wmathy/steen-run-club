@@ -122,11 +122,12 @@ export async function handlePlanScheduleEdit(input: {
   mode: PlanWriteMode;
   userText: string | null;
   operations: ScheduleOperation[];
+  reason?: PlanWriteReason;
 }): Promise<PlanActionResult> {
   const decision = assessPlanWrite({
     mode: input.mode,
     userText: input.userText,
-    reason: "schedule_edit",
+    reason: input.reason ?? "schedule_edit",
   });
   if (!decision.ok) return { success: false, message: decision.message };
   return commitScheduleEdit(input.repo, input.userId, input.operations);
@@ -140,7 +141,12 @@ export function handlePlanSave(input: {
   /** Miles on the plan being replaced. Automatic check-ins cannot dump make-up volume back in. */
   previousRunningMiles?: number | null;
 }):
-  | { success: true; message: string; plan: NormalizedPlan }
+  | {
+      success: true;
+      message: string;
+      plan: NormalizedPlan;
+      warnings: PlanIssue[];
+    }
   | { success: false; message: string; issues?: PlanIssue[] } {
   const decision = assessPlanWrite({
     mode: input.mode,
@@ -177,12 +183,17 @@ export function handlePlanSave(input: {
           prepared.plan.taperDays,
         )
       : null;
+  const warningText =
+    prepared.warnings.length > 0
+      ? ` Optional coaching notes (the plan is already saved; do not call save_or_update_plan again for these): ${prepared.warnings.map((issue) => issue.message).join(" ")}`
+      : "";
 
   return {
     success: true,
     message: structure
-      ? `Plan is valid. ${structure}.`
-      : "Plan is valid.",
+      ? `Plan is valid. ${structure}.${warningText}`
+      : `Plan is valid.${warningText}`,
     plan: prepared.plan,
+    warnings: prepared.warnings,
   };
 }

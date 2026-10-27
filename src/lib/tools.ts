@@ -7,19 +7,28 @@ import {
   isGoogleConfigured,
 } from "@/lib/google-calendar";
 import { handlePlanSave, handlePlanScheduleEdit } from "@/lib/plan-actions";
-import { workoutIsoDate } from "@/lib/plan-rules";
+import type { PlanWorkoutDraft, PlanWeekDraft } from "@/lib/plan-model";
+import { workoutIsoDate, clampRaceTaperDays, type NormalizedPlan } from "@/lib/plan-rules";
 import {
   activePlanRunningMiles,
   createPrismaPlanRepository,
 } from "@/lib/plan-repository";
-import type { PlanWriteMode, PlanWriteReason } from "@/lib/plan-policy";
 import {
-  isoDateSchema,
+  coercePlanWriteReason,
+  type PlanWriteMode,
+  type PlanWriteReason,
+} from "@/lib/plan-policy";
+import type { ScheduleOperation } from "@/lib/plan-edit";
+import {
+  blankToUndefined,
+  canonicalIsoDate,
   MAX_PLAN_WEEKS,
   MAX_WORKOUTS_PER_WEEK,
+  normalizeOptionalMeasure,
+  normalizePlanDayOfWeek,
+  normalizeWorkoutType,
   parseIsoDateAtNoon,
   runTypeSchema,
-  workoutTypeSchema,
 } from "@/lib/validation";
 
 const PROFILE_MAX = 4000;
@@ -28,74 +37,347 @@ const MAX_INACTIVE_PLANS = 10;
 export const SAVE_PLAN_WEEKS_REQUIRED =
   "You must include the non-empty `weeks` array containing each week and its `workouts` in the same `save_or_update_plan` call.";
 
+const looseText = (max: number) => z.string().max(max).nullish();
+/** 0, negative, and null are allowed here so execute() can normalize them. */
+const looseMeasure = z.number().finite().max(2000).nullish();
+const looseDayOfWeek = z
+  .number()
+  .int()
+  .nullish()
+  .describe("0=Monday … 6=Sunday. 7 is accepted as Sunday.");
+
 const workoutInputSchema = z.object({
-  dayOfWeek: z
-    .number()
-    .int()
-    .min(0)
-    .max(6)
-    .describe("0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday, 5=Saturday, 6=Sunday"),
-  date: isoDateSchema
-    .optional()
+  dayOfWeek: looseDayOfWeek,
+  date: z
+    .string()
+    .nullish()
     .describe(
-      "YYYY-MM-DD for this slot. Set this on race day to raceDate. A valid date is kept even if dayOfWeek is off.",
+      "YYYY-MM-DD for this slot. A time suffix such as T00:00:00Z is stripped. Set this on race day to raceDate. A valid date is kept even if dayOfWeek is off.",
     ),
-  type: workoutTypeSchema,
+  type: z
+    .string()
+    .nullish()
+    .describe("One of: easy, tempo, interval, long, race, rest, strength, cross"),
   title: z.string().min(1).max(200),
-  description: z
-    .string()
-    .max(4000)
-    .optional()
-    .describe(
-      "1-2 sentences: warm-up, main set, cool-down, and effort. Strength: one short sets×reps line per exercise. Keep it short so 10 weeks fit in one call.",
-    ),
-  distanceMiles: z
-    .number()
-    .finite()
-    .positive()
-    .max(300)
-    .optional()
-    .describe("Distance in miles (running only; omit for strength/rest)"),
-  durationMin: z
-    .number()
-    .finite()
-    .positive()
-    .max(24 * 60)
-    .optional()
-    .describe("Duration in minutes. Strength sessions should be 30–45."),
-  targetPace: z
-    .string()
-    .max(80)
-    .optional()
-    .describe(
-      'Suggested pace as min/mi for runs, e.g. "9:30/mi". Omit for strength/rest.',
-    ),
+  description: looseText(4000).describe(
+    "1-2 sentences: warm-up, main set, cool-down, and effort. Strength: one short sets×reps line per exercise. Keep it short so 10 weeks fit in one call.",
+  ),
+  distanceMiles: looseMeasure.describe(
+    "Distance in miles. 0 or null for strength/rest is fine.",
+  ),
+  durationMin: looseMeasure.describe(
+    "Duration in minutes. 0 or null for rest is fine. Strength sessions should be 30–45.",
+  ),
+  targetPace: looseText(80).describe(
+    'Suggested pace as min/mi for runs, e.g. "9:30/mi". Omit for strength/rest.',
+  ),
 });
 
 const weekInputSchema = z.object({
   weekNumber: z.number().int().min(1).max(MAX_PLAN_WEEKS),
-  focus: z.string().max(500).optional(),
-  notes: z.string().max(2000).optional(),
-  workouts: z.array(workoutInputSchema).max(MAX_WORKOUTS_PER_WEEK),
+  focus: looseText(500),
+  notes: looseText(2000),
+  workouts: z.array(workoutInputSchema).max(MAX_WORKOUTS_PER_WEEK).nullish(),
 });
-
-const PLAN_WRITE_REASONS = [
-  "new_plan",
-  "athlete_requested",
-  "schedule_edit",
-  "agreed_makeup",
-  "recovery_adjustment",
-] as const satisfies readonly PlanWriteReason[];
 
 const dayRefSchema = z.object({
   weekNumber: z.number().int().min(1).max(MAX_PLAN_WEEKS),
-  dayOfWeek: z
-    .number()
-    .int()
-    .min(0)
-    .max(6)
-    .describe("0=Monday … 6=Sunday"),
+  dayOfWeek: looseDayOfWeek,
 });
+
+export type SavedPlanRecord = {
+  id: string;
+  title: string;
+  weeks: Array<{ workouts: Array<unknown> }>;
+};
+
+export function normalizeSavePlanToolInput(input: {
+  title?: string | null;
+  goal?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  raceDate?: string | null;
+  taperDays?: number | null;
+  reason?: string | null;
+  notes?: string | null;
+  replaceActive?: boolean | null;
+  weeks?: Array<{
+    weekNumber: number;
+    focus?: string | null;
+    notes?: string | null;
+    workouts?: Array<{
+      dayOfWeek?: number | null;
+      date?: string | null;
+      type?: string | null;
+      title?: string | null;
+      description?: string | null;
+      distanceMiles?: number | null;
+      durationMin?: number | null;
+      targetPace?: string | null;
+    }> | null;
+  }> | null;
+}):
+  | {
+      ok: true;
+      reason: PlanWriteReason;
+      replaceActive: boolean;
+      draft: {
+        title: string;
+        goal: string | null;
+        startDate: string;
+        endDate: string | null;
+        notes: string | null;
+        raceDate: string | null;
+        taperDays: number | null;
+        weeks: PlanWeekDraft[];
+      };
+    }
+  | { ok: false; error: string } {
+  const title = blankToUndefined(input.title ?? undefined);
+  if (!title) return { ok: false, error: "Plan title is required." };
+
+  const startDate = canonicalIsoDate(input.startDate);
+  if (!startDate) {
+    return {
+      ok: false,
+      error: "startDate must be a real calendar day as YYYY-MM-DD.",
+    };
+  }
+  if (!input.weeks || input.weeks.length === 0) {
+    return { ok: false, error: SAVE_PLAN_WEEKS_REQUIRED };
+  }
+
+  const weeks: PlanWeekDraft[] = [];
+  let hasRaceWorkout = false;
+  for (const week of input.weeks) {
+    const workouts: PlanWorkoutDraft[] = [];
+    for (const workout of week.workouts ?? []) {
+      const workoutTitle = blankToUndefined(workout.title ?? undefined);
+      if (!workoutTitle) {
+        return {
+          ok: false,
+          error: `Week ${week.weekNumber} has a workout without a title.`,
+        };
+      }
+      const date = canonicalIsoDate(workout.date);
+      const dayOfWeek = normalizePlanDayOfWeek(workout.dayOfWeek, date);
+      if (dayOfWeek == null) {
+        return {
+          ok: false,
+          error: `Workout "${workoutTitle}" needs a dayOfWeek from 0 (Monday) through 6 (Sunday).`,
+        };
+      }
+      const type = normalizeWorkoutType(workout.type, workout.distanceMiles);
+      if (type === "race") hasRaceWorkout = true;
+      workouts.push({
+        dayOfWeek,
+        date: date ?? null,
+        type,
+        title: workoutTitle.slice(0, 200),
+        description: blankToUndefined(workout.description)?.slice(0, 4000) ?? null,
+        distanceMiles: normalizeOptionalMeasure(workout.distanceMiles) ?? null,
+        durationMin: normalizeOptionalMeasure(workout.durationMin) ?? null,
+        targetPace: blankToUndefined(workout.targetPace)?.slice(0, 80) ?? null,
+      });
+    }
+    weeks.push({
+      weekNumber: week.weekNumber,
+      focus: blankToUndefined(week.focus)?.slice(0, 500) ?? null,
+      notes: blankToUndefined(week.notes)?.slice(0, 2000) ?? null,
+      workouts,
+    });
+  }
+
+  const raceDate = canonicalIsoDate(input.raceDate) ?? null;
+  return {
+    ok: true,
+    reason: coercePlanWriteReason(input.reason, "new_plan"),
+    replaceActive: input.replaceActive !== false,
+    draft: {
+      title: title.slice(0, 200),
+      goal: blankToUndefined(input.goal)?.slice(0, 1000) ?? null,
+      startDate,
+      endDate: canonicalIsoDate(input.endDate) ?? null,
+      notes: blankToUndefined(input.notes)?.slice(0, 4000) ?? null,
+      raceDate,
+      taperDays: clampRaceTaperDays(
+        input.taperDays,
+        Boolean(raceDate) || hasRaceWorkout,
+      ),
+      weeks,
+    },
+  };
+}
+
+function normalizeScheduleDay(
+  value: number | null | undefined,
+  label: string,
+): { ok: true; day: number } | { ok: false; error: string } {
+  const day = normalizePlanDayOfWeek(value, null);
+  if (day == null) {
+    return {
+      ok: false,
+      error: `${label} needs a dayOfWeek from 0 (Monday) through 6 (Sunday).`,
+    };
+  }
+  return { ok: true, day };
+}
+
+export function normalizeScheduleEditInput(input: {
+  reason?: string | null;
+  operations?: Array<
+    | {
+        op: "move";
+        from: {
+          weekNumber: number;
+          dayOfWeek?: number | null;
+          title?: string | null;
+        };
+        toWeekNumber: number;
+        toDayOfWeek?: number | null;
+      }
+    | {
+        op: "swap";
+        a: { weekNumber: number; dayOfWeek?: number | null };
+        b: { weekNumber: number; dayOfWeek?: number | null };
+      }
+    | {
+        op: "shift";
+        weekNumber: number;
+        dayOfWeek?: number | null;
+        title?: string | null;
+        days: number;
+      }
+  > | null;
+}):
+  | { ok: true; reason: PlanWriteReason; operations: ScheduleOperation[] }
+  | { ok: false; error: string } {
+  if (!input.operations || input.operations.length === 0) {
+    return { ok: false, error: "At least one schedule operation is required." };
+  }
+  const operations: ScheduleOperation[] = [];
+  for (const operation of input.operations) {
+    if (operation.op === "move") {
+      const fromDay = normalizeScheduleDay(operation.from.dayOfWeek, "move.from");
+      if (!fromDay.ok) return fromDay;
+      const toDay = normalizeScheduleDay(operation.toDayOfWeek, "move.toDayOfWeek");
+      if (!toDay.ok) return toDay;
+      operations.push({
+        op: "move",
+        from: {
+          weekNumber: operation.from.weekNumber,
+          dayOfWeek: fromDay.day,
+          title: blankToUndefined(operation.from.title ?? undefined),
+        },
+        toWeekNumber: operation.toWeekNumber,
+        toDayOfWeek: toDay.day,
+      });
+      continue;
+    }
+    if (operation.op === "swap") {
+      const a = normalizeScheduleDay(operation.a.dayOfWeek, "swap.a");
+      if (!a.ok) return a;
+      const b = normalizeScheduleDay(operation.b.dayOfWeek, "swap.b");
+      if (!b.ok) return b;
+      operations.push({
+        op: "swap",
+        a: { weekNumber: operation.a.weekNumber, dayOfWeek: a.day },
+        b: { weekNumber: operation.b.weekNumber, dayOfWeek: b.day },
+      });
+      continue;
+    }
+    if (operation.days === 0) {
+      return { ok: false, error: "days cannot be 0" };
+    }
+    const day = normalizeScheduleDay(operation.dayOfWeek, "shift");
+    if (!day.ok) return day;
+    operations.push({
+      op: "shift",
+      weekNumber: operation.weekNumber,
+      dayOfWeek: day.day,
+      title: blankToUndefined(operation.title ?? undefined),
+      days: operation.days,
+    });
+  }
+  return {
+    ok: true,
+    reason: coercePlanWriteReason(input.reason, "schedule_edit"),
+    operations,
+  };
+}
+
+async function persistTrainingPlan(
+  userId: string,
+  prepared: NormalizedPlan,
+  replaceActive: boolean,
+): Promise<SavedPlanRecord> {
+  return prisma.$transaction(async (tx) => {
+    if (replaceActive) {
+      await tx.trainingPlan.updateMany({
+        where: { userId, isActive: true },
+        data: { isActive: false },
+      });
+
+      // Retention: keep last N inactive plans, delete older ones
+      const inactive = await tx.trainingPlan.findMany({
+        where: { userId, isActive: false },
+        orderBy: { updatedAt: "desc" },
+        select: { id: true },
+      });
+      if (inactive.length > MAX_INACTIVE_PLANS) {
+        const toDelete = inactive.slice(MAX_INACTIVE_PLANS).map((p) => p.id);
+        await tx.trainingPlan.deleteMany({
+          where: { id: { in: toDelete }, userId },
+        });
+      }
+    }
+
+    const plan = await tx.trainingPlan.create({
+      data: {
+        userId,
+        title: prepared.title,
+        goal: prepared.goal ?? null,
+        startDate: parseIsoDateAtNoon(prepared.startDate),
+        endDate: prepared.endDate ? parseIsoDateAtNoon(prepared.endDate) : null,
+        raceDate: prepared.raceDate
+          ? parseIsoDateAtNoon(prepared.raceDate)
+          : null,
+        taperDays: prepared.taperDays,
+        notes: prepared.notes ?? null,
+        isActive: true,
+        weeks: {
+          create: prepared.weeks.map((w) => ({
+            weekNumber: w.weekNumber,
+            focus: w.focus ?? null,
+            notes: w.notes ?? null,
+            workouts: {
+              create: w.workouts.map((wo) => ({
+                dayOfWeek: wo.dayOfWeek,
+                date: parseIsoDateAtNoon(
+                  workoutIsoDate(prepared.startDate, w.weekNumber, wo),
+                ),
+                type: wo.type,
+                title: wo.title,
+                description: wo.description ?? null,
+                distanceMiles: wo.distanceMiles ?? null,
+                durationMin: wo.durationMin ?? null,
+                targetPace: wo.targetPace?.trim() || null,
+              })),
+            },
+          })),
+        },
+      },
+      include: {
+        weeks: { include: { workouts: true } },
+      },
+    });
+    return {
+      id: plan.id,
+      title: plan.title,
+      weeks: plan.weeks.map((week) => ({ workouts: week.workouts })),
+    };
+  }, { maxWait: 10_000, timeout: 25_000 });
+}
 
 export function createCoachTools(
   userId: string,
@@ -105,6 +387,11 @@ export function createCoachTools(
     mode?: PlanWriteMode;
     /** Latest athlete message, used to tell a real schedule request from missed work. */
     userText?: string | null;
+    /** Test seam. Production writes through Prisma. */
+    persistPlan?: (
+      plan: NormalizedPlan,
+      replaceActive: boolean,
+    ) => Promise<SavedPlanRecord>;
   },
 ) {
   const mode = options?.mode ?? "interactive";
@@ -233,8 +520,8 @@ export function createCoachTools(
       description:
         "Log a completed run for the athlete when they describe one in chat. Distance must be in miles.",
       inputSchema: z.object({
-        date: isoDateSchema.describe(
-          `ISO date YYYY-MM-DD. If the athlete means today or omits the date, use ${clock.isoDate} (${clock.weekday}). Do not invent other dates.`,
+        date: z.string().describe(
+          `ISO date YYYY-MM-DD. A time suffix is stripped. If the athlete means today or omits the date, use ${clock.isoDate} (${clock.weekday}). Do not invent other dates.`,
         ),
         distanceMiles: z
           .number()
@@ -242,100 +529,107 @@ export function createCoachTools(
           .positive()
           .max(300)
           .describe("Distance in miles"),
-        durationMin: z.number().finite().positive().max(24 * 60).optional(),
+        durationMin: looseMeasure,
         type: runTypeSchema,
-        notes: z.string().max(4000).optional(),
-        perceivedEffort: z.number().int().min(1).max(10).optional(),
+        notes: looseText(4000),
+        perceivedEffort: z.number().int().nullish(),
       }),
       execute: async (input) => {
+        const date = canonicalIsoDate(input.date);
+        if (!date) {
+          return {
+            success: false as const,
+            message: "Date must be a real calendar day as YYYY-MM-DD.",
+          };
+        }
+        const perceived =
+          input.perceivedEffort != null &&
+          input.perceivedEffort >= 1 &&
+          input.perceivedEffort <= 10
+            ? input.perceivedEffort
+            : null;
         const run = await prisma.run.create({
           data: {
             userId,
-            date: parseIsoDateAtNoon(input.date),
+            date: parseIsoDateAtNoon(date),
             distanceMiles: input.distanceMiles,
-            durationMin: input.durationMin ?? null,
+            durationMin: normalizeOptionalMeasure(input.durationMin) ?? null,
             type: input.type,
-            notes: input.notes ?? null,
-            perceivedEffort: input.perceivedEffort ?? null,
+            notes: blankToUndefined(input.notes) ?? null,
+            perceivedEffort: perceived,
             source: "coach",
           },
         });
         return {
           success: true,
           runId: run.id,
-          message: `Logged ${run.distanceMiles} mi ${run.type} run on ${input.date}.`,
+          message: `Logged ${run.distanceMiles} mi ${run.type} run on ${date}.`,
         };
       },
     }),
 
     save_or_update_plan: tool({
       description:
-        "Create or replace the athlete's full training plan in one call. weeks is required: include every week and its workouts in this same call, with each workout description kept to 1-2 sentences (warm-up, main set, cool-down). A missing or empty weeks array is not saved. dayOfWeek is 0=Monday through 6=Sunday (Friday is 4). Race plans must set raceDate, taperDays (10-14), and a type race workout on that date (set date to raceDate). The server rejects plans that skip base → build → peak, stack hard days, ramp mileage too fast, or use a taper outside 10-14 days. If the tool returns errors, fix them and call again with the full weeks array before telling the athlete the plan is saved. For a move/shift/swap of existing workouts, use edit_plan_schedule instead. Do not call this to add make-up miles for missed work unless the athlete clearly agreed.",
+        "Create or replace the athlete's full training plan in one call. weeks is required: include every week and its workouts in this same call, with each workout description kept to 1-2 sentences (warm-up, main set, cool-down). A missing or empty weeks array is not saved. dayOfWeek is 0=Monday through 6=Sunday (Friday is 4); 7 is accepted as Sunday. Workout type may be a common alias (recovery, threshold, vo2, long_run, lift, bjj, off) and is normalized. Optional fields may be null. reason may be omitted. Race plans should set raceDate and a type race workout on that date (set date to raceDate). taperDays is clamped to 10–14 (default 12) when a race is set. The server rejects stacked hard days, a reckless mileage jump once volume is near the top of the block, a long-run jump, quality inside the taper, and a missing race-day workout. Easy-mile share, cutback weeks, phase-to-phase volume, and taper volume are coaching notes and do not block the save. If the tool returns errors, fix them and call again with the full weeks array before telling the athlete the plan is saved. For a move/shift/swap of existing workouts, use edit_plan_schedule instead. Do not call this to add make-up miles for missed work unless the athlete clearly agreed.",
       inputSchema: z.object({
         title: z.string().min(1).max(200),
-        goal: z.string().max(1000).optional(),
-        startDate: isoDateSchema.describe(
-          "ISO date YYYY-MM-DD for week 1 (any day is fine; the plan UI snaps to that week's Monday). Prefer the Monday of the training week when possible.",
-        ),
-        endDate: isoDateSchema.optional(),
-        raceDate: isoDateSchema
-          .optional()
+        goal: looseText(1000),
+        startDate: z
+          .string()
+          .nullish()
           .describe(
-            "Goal race day YYYY-MM-DD. Required for a race plan. The taper is the 10–14 days before this date. Also set that day's workout date to this value.",
+            "ISO date YYYY-MM-DD for week 1. A time suffix is stripped. Any day is fine; the plan UI snaps to that week's Monday. Prefer the Monday of the training week when possible.",
+          ),
+        endDate: z.string().nullish(),
+        raceDate: z
+          .string()
+          .nullish()
+          .describe(
+            "Goal race day YYYY-MM-DD. A time suffix is stripped. The taper is the 10–14 days before this date. Also set that day's workout date to this value.",
           ),
         taperDays: z
           .number()
           .int()
-          .min(10)
-          .max(14)
-          .optional()
+          .nullish()
           .describe(
-            "Days of taper before race day, not counting race day. Required with raceDate. Minimum 10, maximum 14.",
+            "Days of taper before race day, not counting race day. Optional. Omitted or out-of-range values are clamped to 10–14 (default 12) when the plan has a race.",
           ),
         reason: z
-          .enum(PLAN_WRITE_REASONS)
+          .string()
+          .nullish()
           .describe(
-            "new_plan or athlete_requested when they asked for a plan. schedule_edit only if a full rewrite is truly required — prefer edit_plan_schedule. agreed_makeup only after an explicit yes. recovery_adjustment to lower load for fatigue or injury. Never use a make-up reason for missed work they have not agreed to.",
+            "Optional. new_plan or athlete_requested when they asked for a plan. schedule_edit only if a full rewrite is truly required — prefer edit_plan_schedule. agreed_makeup only after an explicit yes. recovery_adjustment to lower load for fatigue or injury. Omitted or unknown values are saved as new_plan. Never use a make-up reason for missed work they have not agreed to.",
           ),
-        notes: z.string().max(4000).optional(),
+        notes: looseText(4000),
         replaceActive: z
           .boolean()
-          .optional()
+          .nullish()
           .describe("If true (default), deactivate previous active plans"),
         weeks: z
           .array(weekInputSchema)
           .max(MAX_PLAN_WEEKS)
-          .optional()
+          .nullish()
           .describe(
             "REQUIRED. Every week and its workouts, in this same call. Keep workout descriptions to 1-2 sentences. Missing or empty is rejected without saving.",
           ),
       }),
       execute: async (input) => {
-        if (!input.weeks || input.weeks.length === 0) {
+        const normalized = normalizeSavePlanToolInput(input);
+        if (!normalized.ok) {
           return {
             success: false as const,
-            error: SAVE_PLAN_WEEKS_REQUIRED,
-            message: SAVE_PLAN_WEEKS_REQUIRED,
+            error: normalized.error,
+            message: normalized.error,
           };
         }
-        const weeks = input.weeks;
         const previousRunningMiles =
           mode === "automatic" ? await activePlanRunningMiles(userId) : null;
         const decision = handlePlanSave({
           mode,
           userText,
-          reason: input.reason,
+          reason: normalized.reason,
           previousRunningMiles,
-          draft: {
-            title: input.title,
-            goal: input.goal,
-            startDate: input.startDate,
-            endDate: input.endDate,
-            notes: input.notes,
-            raceDate: input.raceDate,
-            taperDays: input.taperDays,
-            weeks,
-          },
+          draft: normalized.draft,
         });
         if (!decision.success) {
           return {
@@ -346,73 +640,12 @@ export function createCoachTools(
         }
 
         const prepared = decision.plan;
-        const replaceActive = input.replaceActive !== false;
-
-        const plan = await prisma.$transaction(async (tx) => {
-          if (replaceActive) {
-            await tx.trainingPlan.updateMany({
-              where: { userId, isActive: true },
-              data: { isActive: false },
-            });
-
-            // Retention: keep last N inactive plans, delete older ones
-            const inactive = await tx.trainingPlan.findMany({
-              where: { userId, isActive: false },
-              orderBy: { updatedAt: "desc" },
-              select: { id: true },
-            });
-            if (inactive.length > MAX_INACTIVE_PLANS) {
-              const toDelete = inactive
-                .slice(MAX_INACTIVE_PLANS)
-                .map((p) => p.id);
-              await tx.trainingPlan.deleteMany({
-                where: { id: { in: toDelete }, userId },
-              });
-            }
-          }
-
-          return tx.trainingPlan.create({
-            data: {
-              userId,
-              title: prepared.title,
-              goal: prepared.goal ?? null,
-              startDate: parseIsoDateAtNoon(prepared.startDate),
-              endDate: prepared.endDate
-                ? parseIsoDateAtNoon(prepared.endDate)
-                : null,
-              raceDate: prepared.raceDate
-                ? parseIsoDateAtNoon(prepared.raceDate)
-                : null,
-              taperDays: prepared.taperDays,
-              notes: prepared.notes ?? null,
-              isActive: true,
-              weeks: {
-                create: prepared.weeks.map((w) => ({
-                  weekNumber: w.weekNumber,
-                  focus: w.focus ?? null,
-                  notes: w.notes ?? null,
-                  workouts: {
-                    create: w.workouts.map((wo) => ({
-                      dayOfWeek: wo.dayOfWeek,
-                      date: parseIsoDateAtNoon(
-                        workoutIsoDate(prepared.startDate, w.weekNumber, wo),
-                      ),
-                      type: wo.type,
-                      title: wo.title,
-                      description: wo.description ?? null,
-                      distanceMiles: wo.distanceMiles ?? null,
-                      durationMin: wo.durationMin ?? null,
-                      targetPace: wo.targetPace?.trim() || null,
-                    })),
-                  },
-                })),
-              },
-            },
-            include: {
-              weeks: { include: { workouts: true } },
-            },
-          });
-        }, { maxWait: 10_000, timeout: 25_000 });
+        const plan = await (options?.persistPlan ??
+          ((next, replaceActive) =>
+            persistTrainingPlan(userId, next, replaceActive)))(
+          prepared,
+          normalized.replaceActive,
+        );
 
         const workoutCount = plan.weeks.reduce(
           (n, w) => n + w.workouts.length,
@@ -426,6 +659,7 @@ export function createCoachTools(
           workouts: workoutCount,
           raceDate: prepared.raceDate,
           taperDays: prepared.taperDays,
+          warnings: decision.warnings,
           message: `Saved plan "${plan.title}" with ${plan.weeks.length} weeks / ${workoutCount} workouts. ${decision.message}`,
         };
       },
@@ -433,25 +667,21 @@ export function createCoachTools(
 
     edit_plan_schedule: tool({
       description:
-        "Move, swap, or shift workouts on the athlete's stored active plan. Call this whenever they ask to move, shift, swap, switch, or reschedule a workout or a day — then confirm only after it returns success. This writes the Plan tab. Do not only talk about the change. Do not use this to force make-up miles after a missed workout unless they asked to move that workout or clearly agreed.",
+        "Move, swap, or shift workouts on the athlete's stored active plan. Call this whenever they ask to move, shift, swap, switch, or reschedule a workout or a day — then confirm only after it returns success. This writes the Plan tab. Do not only talk about the change. Do not use this to force make-up miles after a missed workout unless they asked to move that workout or clearly agreed. reason is optional and defaults to schedule_edit.",
       inputSchema: z.object({
+        reason: z.string().nullish(),
         operations: z
           .array(
             z.discriminatedUnion("op", [
               z.object({
                 op: z.literal("move"),
                 from: dayRefSchema.extend({
-                  title: z
-                    .string()
-                    .min(1)
-                    .max(200)
-                    .optional()
-                    .describe(
-                      "Exact workout title. Omit to move every workout on that day.",
-                    ),
+                  title: looseText(200).describe(
+                    "Exact workout title. Omit or null to move every workout on that day.",
+                  ),
                 }),
                 toWeekNumber: z.number().int().min(1).max(MAX_PLAN_WEEKS),
-                toDayOfWeek: z.number().int().min(0).max(6),
+                toDayOfWeek: looseDayOfWeek,
               }),
               z.object({
                 op: z.literal("swap"),
@@ -461,35 +691,30 @@ export function createCoachTools(
               z.object({
                 op: z.literal("shift"),
                 weekNumber: z.number().int().min(1).max(MAX_PLAN_WEEKS),
-                dayOfWeek: z.number().int().min(0).max(6),
-                title: z
-                  .string()
-                  .min(1)
-                  .max(200)
-                  .optional()
-                  .describe(
-                    "Exact workout title. Omit to shift every workout on that day.",
-                  ),
-                days: z
-                  .number()
-                  .int()
-                  .min(-60)
-                  .max(60)
-                  .refine((days) => days !== 0, "days cannot be 0"),
+                dayOfWeek: looseDayOfWeek,
+                title: looseText(200).describe(
+                  "Exact workout title. Omit or null to shift every workout on that day.",
+                ),
+                days: z.number().int().min(-60).max(60),
               }),
             ]),
           )
           .min(1)
           .max(12),
       }),
-      execute: async ({ operations }) => {
+      execute: async (input) => {
+        const normalized = normalizeScheduleEditInput(input);
+        if (!normalized.ok) {
+          return { success: false, message: normalized.error };
+        }
         try {
           return await handlePlanScheduleEdit({
             repo: planRepository,
             userId,
             mode,
             userText,
-            operations,
+            reason: normalized.reason,
+            operations: normalized.operations,
           });
         } catch (err) {
           console.error("edit_plan_schedule failed:", err);

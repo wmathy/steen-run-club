@@ -2,10 +2,15 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppLogo } from "@/components/app-logo";
 import { CoachMessageList } from "@/components/coach-message-list";
-import { coachErrorMessage } from "@/lib/coach-errors";
+import { pollForSavedChatReply } from "@/lib/chat-stream-recovery";
+import {
+  coachErrorMessage,
+  isXaiCreditsOrSpendingLimitError,
+} from "@/lib/coach-errors";
 import {
   isCoachReplyPending,
   messagesToDisplay,
@@ -15,14 +20,23 @@ import {
 const STICK_BOTTOM_THRESHOLD = 120;
 
 export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
+  const router = useRouter();
   const [input, setInput] = useState("");
   /** Show "Jump to latest" when user scrolled up during a long reply */
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const [streamRecovered, setStreamRecovered] = useState(false);
+  const [checkingSavedReply, setCheckingSavedReply] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   /** When true, the latest coach bubble stays pinned to the bottom */
   const stickToBottomRef = useRef(true);
+  const recoveryTokenRef = useRef(0);
+  const recoveryKeyRef = useRef<string | null>(null);
+  const streamRecoveredRef = useRef(false);
+  const lastStreamErrorRef = useRef<unknown>(null);
+  const mountedRef = useRef(true);
+  const beginRecoveryRef = useRef<(snapshot: UIMessage[]) => void>(() => {});
 
   function isNearBottom(el: HTMLDivElement): boolean {
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -61,6 +75,21 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
     resizeTextarea();
   }, [input]);
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  function cancelStreamRecovery() {
+    recoveryTokenRef.current += 1;
+    recoveryKeyRef.current = null;
+    streamRecoveredRef.current = false;
+    setStreamRecovered(false);
+    setCheckingSavedReply(false);
+  }
+
   const transport = useMemo(() => {
     const timeZone =
       typeof Intl !== "undefined"
@@ -73,18 +102,33 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
     });
   }, []);
 
-  const { messages, sendMessage, status, error, setMessages } = useChat({
+  const { messages, sendMessage, status, error, setMessages, clearError } = useChat({
     messages: initialMessages,
     transport,
-    onFinish: async ({ messages: finished, isError, isAbort }) => {
+    onError: (streamError) => {
+      lastStreamErrorRef.current = streamError;
+    },
+    onFinish: async ({ messages: finished, isError, isAbort, isDisconnect }) => {
       if (isAbort) return;
-      if (isError) {
+      if (isError || isDisconnect) {
         // The stream failed before a complete reply. Drop the partial
         // assistant message so the next send cannot reveal it as history.
-        // The error banner (including xAI credit failures) is the result.
-        setMessages(messagesToDisplay(finished, "error"));
+        // A network drop can still finish on the server, so poll the saved chat.
+        streamRecoveredRef.current = false;
+        setStreamRecovered(false);
+        const visible = messagesToDisplay(finished, "error");
+        setMessages(visible);
+        const credits =
+          isXaiCreditsOrSpendingLimitError(lastStreamErrorRef.current) ||
+          isXaiCreditsOrSpendingLimitError(error);
+        if (!(credits && !isDisconnect)) {
+          // Compare against the transcript with the partial reply removed so a
+          // fully saved assistant still counts as new.
+          beginRecoveryRef.current(visible);
+        }
         return;
       }
+      lastStreamErrorRef.current = null;
 
       const clientCount = finished.length;
       const lastUser = [...finished].reverse().find((m) => m.role === "user");
@@ -129,6 +173,54 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
     },
   });
 
+  const beginStreamRecovery = useCallback((snapshot: UIMessage[]) => {
+    if (streamRecoveredRef.current) return;
+    const key = snapshot.map((message) => message.id).join("|");
+    if (recoveryKeyRef.current === key) return;
+    recoveryKeyRef.current = key;
+    const token = ++recoveryTokenRef.current;
+    setCheckingSavedReply(true);
+    void (async () => {
+      const saved = await pollForSavedChatReply({
+        snapshot,
+        shouldContinue: () =>
+          mountedRef.current && recoveryTokenRef.current === token,
+        load: async () => {
+          const res = await fetch("/api/chat");
+          if (!res.ok) return null;
+          const data = (await res.json()) as { messages?: UIMessage[] };
+          return Array.isArray(data.messages) ? data.messages : null;
+        },
+      });
+      if (!mountedRef.current || recoveryTokenRef.current !== token) return;
+      setCheckingSavedReply(false);
+      if (!saved) return;
+      streamRecoveredRef.current = true;
+      setMessages(saved);
+      setStreamRecovered(true);
+      clearError();
+      router.refresh();
+    })();
+  }, [clearError, router, setMessages]);
+
+  useEffect(() => {
+    beginRecoveryRef.current = beginStreamRecovery;
+  }, [beginStreamRecovery]);
+
+  useEffect(() => {
+    if (status !== "error") return;
+    if (
+      isXaiCreditsOrSpendingLimitError(error) ||
+      isXaiCreditsOrSpendingLimitError(lastStreamErrorRef.current)
+    ) {
+      recoveryTokenRef.current += 1;
+      recoveryKeyRef.current = null;
+      setCheckingSavedReply(false);
+      return;
+    }
+    beginRecoveryRef.current(messages);
+  }, [status, error, messages]);
+
   // Auto-follow only if the user hasn't scrolled up to read earlier text
   useEffect(() => {
     if (!stickToBottomRef.current) return;
@@ -141,14 +233,21 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
   }, [messages, status]);
 
   const busy = isCoachReplyPending(status);
+  const listStatus = streamRecovered ? "ready" : status;
+
+  function sendUserText(text: string) {
+    cancelStreamRecovery();
+    lastStreamErrorRef.current = null;
+    clearError();
+    stickToBottomRef.current = true;
+    setShowJumpToLatest(false);
+    void sendMessage({ text });
+  }
 
   function submitMessage() {
     const text = input.trim();
     if (!text || busy) return;
-    // New send: pin to bottom so their message + reply are visible
-    stickToBottomRef.current = true;
-    setShowJumpToLatest(false);
-    sendMessage({ text });
+    sendUserText(text);
     setInput("");
     requestAnimationFrame(() => {
       if (textareaRef.current) {
@@ -160,6 +259,8 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
 
   async function clearChat() {
     if (!confirm("Clear conversation history?")) return;
+    cancelStreamRecovery();
+    clearError();
     await fetch("/api/chat", { method: "DELETE" });
     setMessages([]);
   }
@@ -214,7 +315,7 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
                   key={suggestion}
                   type="button"
                   disabled={busy}
-                  onClick={() => sendMessage({ text: suggestion })}
+                  onClick={() => sendUserText(suggestion)}
                   className="min-h-11 w-full rounded-xl border border-card-border bg-input-bg px-3 py-2.5 text-left text-sm text-foreground/90 transition active:bg-accent-soft sm:w-auto sm:rounded-full sm:py-1.5 sm:text-xs"
                 >
                   {suggestion}
@@ -224,11 +325,22 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
           </div>
         )}
 
-        <CoachMessageList messages={messages} status={status} />
+        <CoachMessageList messages={messages} status={listStatus} />
 
-        {error && (
+        {checkingSavedReply && !error && (
+          <div className="rounded-lg border border-card-border bg-card/80 px-3 py-2 text-sm text-muted">
+            Connection interrupted. Checking whether Coach finished saving…
+          </div>
+        )}
+
+        {error && !streamRecovered && (
           <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
             {coachErrorMessage(error)}
+            {checkingSavedReply && (
+              <p className="mt-1 text-xs">
+                Connection interrupted. Checking whether Coach finished saving…
+              </p>
+            )}
           </div>
         )}
 
