@@ -169,6 +169,10 @@ export async function POST(req: Request) {
       stopWhen: stepCountIs(8),
     });
 
+    // Set when toUIMessageStream reports a model/tool failure. onEnd still
+    // runs after that; an empty assistant with no successful write is not saved.
+    let hadStreamError = false;
+
     // The chat UI holds assistant text until this stream finishes.
     // Keep streaming so tool steps, onError (xAI credits), and onEnd
     // persistence all finish before that bubble is shown.
@@ -180,10 +184,11 @@ export async function POST(req: Request) {
         // "An error occurred.", which hides xAI credit exhaustion.
         // Map that case explicitly and keep every other detail off the client.
         onError: (error) => {
+          hadStreamError = true;
           console.error("Chat stream error:", error);
           return coachErrorMessage(error);
         },
-        onEnd: async ({ messages: finalMessages }) => {
+        onEnd: async ({ messages: finalMessages, isAborted }) => {
           try {
             // Persist this turn only: new user message + following assistants.
             // Prefer id match so truncation of history for model context cannot
@@ -214,6 +219,7 @@ export async function POST(req: Request) {
             await appendChatTurn(
               userId,
               toAppend.length > 0 ? toAppend : turnMessages,
+              { hadStreamError: hadStreamError || isAborted },
             );
           } catch (e) {
             console.error("Failed to persist chat:", e);
