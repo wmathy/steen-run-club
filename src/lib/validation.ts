@@ -45,6 +45,140 @@ export const isoDateSchema = z
 export const runTypeSchema = z.enum(RUN_TYPES);
 export const workoutTypeSchema = z.enum(WORKOUT_TYPES);
 
+const WORKOUT_TYPE_ALIASES: Record<string, (typeof WORKOUT_TYPES)[number]> = {
+  recovery: "easy",
+  warmup: "easy",
+  warm_up: "easy",
+  cooldown: "easy",
+  cool_down: "easy",
+  jog: "easy",
+  base: "easy",
+  aerobic: "easy",
+  threshold: "tempo",
+  cruise: "tempo",
+  steady: "tempo",
+  marathon_pace: "tempo",
+  vo2: "interval",
+  vo2max: "interval",
+  vo2_max: "interval",
+  track: "interval",
+  speed: "interval",
+  reps: "interval",
+  hills: "interval",
+  fartlek: "interval",
+  strides: "interval",
+  long_run: "long",
+  time_trial: "race",
+  "5k": "race",
+  race_day: "race",
+  off: "rest",
+  recovery_day: "rest",
+  lift: "strength",
+  lifting: "strength",
+  gym: "strength",
+  mobility: "strength",
+  core: "strength",
+  bjj: "cross",
+  bike: "cross",
+  cycling: "cross",
+  swim: "cross",
+  cross_train: "cross",
+  crosstrain: "cross",
+  other: "cross",
+};
+
+/** null, undefined, and "" become undefined. Other strings are trimmed. */
+export function blankToUndefined(
+  value: string | null | undefined,
+): string | undefined {
+  if (value == null) return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * YYYY-MM-DD, or the calendar day of an ISO timestamp.
+ * Invalid optional dates return undefined so the tool can ignore them.
+ */
+export function canonicalIsoDate(
+  value: string | null | undefined,
+): string | undefined {
+  if (value == null) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const day = trimmed.includes("T")
+    ? trimmed.slice(0, trimmed.indexOf("T"))
+    : trimmed;
+  return isValidIsoCalendarDate(day) ? day : undefined;
+}
+
+/**
+ * 0, negative, null, and non-finite values become undefined.
+ * Rest and strength days often send 0. Values above 2000 are capped.
+ */
+export function normalizeOptionalMeasure(
+  value: number | null | undefined,
+): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
+  return value > 2000 ? 2000 : value;
+}
+
+export function normalizeWorkoutType(
+  raw: string | null | undefined,
+  distanceMiles: number | null | undefined,
+): (typeof WORKOUT_TYPES)[number] {
+  const key = (raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+  if ((WORKOUT_TYPES as readonly string[]).includes(key)) {
+    return key as (typeof WORKOUT_TYPES)[number];
+  }
+  const alias = WORKOUT_TYPE_ALIASES[key];
+  if (alias) return alias;
+  return typeof distanceMiles === "number" &&
+    Number.isFinite(distanceMiles) &&
+    distanceMiles > 0
+    ? "easy"
+    : "rest";
+}
+
+/** 0 = Monday … 6 = Sunday. */
+export function planWeekdayIndex(isoDate: string): number {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  const jsDay = new Date(Date.UTC(y, m - 1, d, 12, 0, 0)).getUTCDay();
+  return jsDay === 0 ? 6 : jsDay - 1;
+}
+
+/**
+ * Accept 7 as Sunday. Out-of-range values use the workout date when it
+ * is a real calendar day, otherwise clamp into Monday–Sunday.
+ */
+export function normalizePlanDayOfWeek(
+  value: number | null | undefined,
+  isoDate?: string | null,
+): number | undefined {
+  const date =
+    isoDate && isValidIsoCalendarDate(isoDate) ? isoDate : undefined;
+  if (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= 6
+  ) {
+    return value;
+  }
+  if (value === 7) return date ? planWeekdayIndex(date) : 6;
+  if (date) return planWeekdayIndex(date);
+  if (typeof value === "number" && Number.isInteger(value)) {
+    if (value > 7) return 6;
+    if (value < 0) return 0;
+  }
+  return undefined;
+}
+
 export const createRunSchema = z.object({
   date: z
     .string()

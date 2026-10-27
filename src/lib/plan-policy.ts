@@ -10,6 +10,28 @@ export type PlanWriteReason =
   | "agreed_makeup"
   | "recovery_adjustment";
 
+export const PLAN_WRITE_REASONS = [
+  "new_plan",
+  "athlete_requested",
+  "schedule_edit",
+  "agreed_makeup",
+  "recovery_adjustment",
+] as const satisfies readonly PlanWriteReason[];
+
+/** Missing, null, or unknown reasons must not fail schema validation. */
+export function coercePlanWriteReason(
+  value: string | null | undefined,
+  fallback: PlanWriteReason,
+): PlanWriteReason {
+  if (
+    value &&
+    (PLAN_WRITE_REASONS as readonly string[]).includes(value)
+  ) {
+    return value as PlanWriteReason;
+  }
+  return fallback;
+}
+
 export type PlanWriteMode = "interactive" | "automatic";
 
 const MISSED_PATTERNS = [

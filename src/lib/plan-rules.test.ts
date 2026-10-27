@@ -206,7 +206,7 @@ describe("progressive load", () => {
     assert.ok(codes(draft).includes("stacked_stress"));
   });
 
-  it("rejects a week that is mostly quality", () => {
+  it("notes a mostly-quality week without blocking the save", () => {
     const draft: PlanDraft = {
       title: "Too hard",
       startDate: START,
@@ -221,10 +221,13 @@ describe("progressive load", () => {
         },
       ],
     };
-    assert.ok(codes(draft).includes("easy_share"));
+    const result = preparePlanForSave(draft);
+    assert.equal(result.ok, true, result.ok ? "" : result.issues.map((issue) => issue.message).join("\n"));
+    if (!result.ok) return;
+    assert.ok(result.warnings.some((issue) => issue.code === "easy_share"));
   });
 
-  it("rejects four mileage increases in a row", () => {
+  it("notes four mileage increases in a row without blocking the save", () => {
     const miles = [10, 11, 12, 13, 14];
     const draft: PlanDraft = {
       title: "No cutback",
@@ -234,7 +237,40 @@ describe("progressive load", () => {
         workouts: [workout(0, "easy", `Easy ${index + 1}`, distance)],
       })),
     };
-    assert.ok(codes(draft).includes("mileage_cutback"));
+    const result = preparePlanForSave(draft);
+    assert.equal(result.ok, true, result.ok ? "" : result.issues.map((issue) => issue.message).join("\n"));
+    if (!result.ok) return;
+    assert.ok(result.warnings.some((issue) => issue.code === "mileage_cutback"));
+  });
+
+  it("allows a post-race rebuild of 12, 18, 24, 28, 32 miles", () => {
+    const weeks = [
+      [8, 4],
+      [12, 6],
+      [16, 8],
+      [18, 10],
+      [20, 12],
+    ];
+    const draft: PlanDraft = {
+      title: "Return to base",
+      startDate: START,
+      weeks: weeks.map(([easy, long], index) => ({
+        weekNumber: index + 1,
+        workouts: [
+          workout(0, "easy", `Easy ${index + 1}`, easy),
+          workout(5, "long", `Long ${index + 1}`, long),
+        ],
+      })),
+    };
+    const result = preparePlanForSave(draft);
+    assert.equal(
+      result.ok,
+      true,
+      result.ok ? "" : result.issues.map((issue) => issue.message).join("\n"),
+    );
+    if (!result.ok) return;
+    assert.ok(result.warnings.some((issue) => issue.code === "mileage_cutback"));
+    assert.ok(result.warnings.every((issue) => issue.code !== "mileage_ramp"));
   });
 
   it("rejects a peak label before the base", () => {
@@ -471,7 +507,7 @@ describe("low-volume 5K block", () => {
     );
   });
 
-  it("still rejects a build that collapses far under the base", () => {
+  it("notes a build that collapses far under the base without blocking the save", () => {
     const draft: PlanDraft = {
       title: "Collapsed build",
       startDate: "2026-08-03",
@@ -524,7 +560,14 @@ describe("low-volume 5K block", () => {
         },
       ],
     };
-    assert.ok(codes(draft).includes("phase_load"));
+    const result = preparePlanForSave(draft);
+    assert.equal(
+      result.ok,
+      true,
+      result.ok ? "" : result.issues.map((issue) => issue.message).join("\n"),
+    );
+    if (!result.ok) return;
+    assert.ok(result.warnings.some((issue) => issue.code === "phase_load"));
   });
 });
 
