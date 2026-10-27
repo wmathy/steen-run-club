@@ -5,7 +5,9 @@ import type { UIMessage } from "ai";
 import { CoachMessageList } from "@/components/coach-message-list";
 import {
   coachingTextFromMessage,
+  coachTranscriptStatus,
   isCoachReplyPending,
+  isCoachTurnBusy,
   messagesToDisplay,
 } from "@/lib/coach-message-display";
 
@@ -62,6 +64,30 @@ function visibleText(messages: readonly UIMessage[], status: string): string[] {
 }
 
 describe("coach reply appears all at once", () => {
+  it("keeps the composer busy and Coach thinking while recovery is still polling", () => {
+    assert.equal(isCoachTurnBusy("error", true), true);
+    assert.equal(isCoachTurnBusy("ready", true), true);
+    assert.equal(isCoachTurnBusy("error", false), false);
+    assert.equal(isCoachTurnBusy("streaming", false), true);
+    const status = coachTranscriptStatus("error", { checkingSavedReply: true });
+    assert.equal(status, "streaming");
+    assert.equal(isCoachReplyPending(status), true);
+    const html = renderToStaticMarkup(
+      <CoachMessageList
+        messages={[user("u-recover", "Lengthen the weekend runs")]}
+        status={status}
+      />,
+    );
+    assert.match(html, /aria-label="Coach is thinking"/);
+    assert.equal(
+      coachTranscriptStatus("error", {
+        checkingSavedReply: true,
+        streamRecovered: true,
+      }),
+      "ready",
+    );
+  });
+
   it("hides every partial snapshot while Coach is thinking or streaming", () => {
     const prompts = [
       "submitted" as const,

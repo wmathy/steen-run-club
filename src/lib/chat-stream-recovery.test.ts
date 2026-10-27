@@ -17,6 +17,10 @@ function assistant(id: string, text: string): RecoveryMessage {
 }
 
 describe("saved chat recovery", () => {
+  it("keeps polling through a slow plan-generation turn", () => {
+    assert.equal(CHAT_STREAM_RECOVERY_WINDOW_MS, 240_000);
+  });
+
   it("sees an assistant saved after the athlete's latest message", () => {
     const client = [user("u1", "Build the 10-week plan")];
     const waiting = [user("u1", "Build the 10-week plan")];

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { SAVED_PLAN_ALREADY_ACTIVE } from "@/lib/plan-actions";
 
 process.env.DATABASE_URL ??=
   "postgresql://steen:steen@127.0.0.1:5432/steen_test?sslmode=disable";
@@ -417,6 +418,87 @@ describe("save_or_update_plan permissive input", () => {
       short.result && "message" in short.result ? String(short.result.message) : "",
     );
     assert.equal(short.stored?.taperDays, 10);
+  });
+
+  it("saves on the first call when coaching notes are the only issues", async () => {
+    const { result } = await executeSave(
+      {
+        title: "Stacked week",
+        startDate: "2026-08-03",
+        weeks: [
+          {
+            weekNumber: 1,
+            workouts: [
+              {
+                dayOfWeek: 0,
+                type: "easy",
+                title: "Easy",
+                distanceMiles: 6,
+              },
+              {
+                dayOfWeek: 3,
+                type: "tempo",
+                title: "Tempo",
+                distanceMiles: 4,
+              },
+              {
+                dayOfWeek: 4,
+                type: "long",
+                title: "Long",
+                distanceMiles: 8,
+              },
+            ],
+          },
+        ],
+      },
+      "stacked-save",
+    );
+    assert.ok(result && typeof result === "object" && "success" in result);
+    assert.equal(result.success, true, "message" in result ? String(result.message) : "");
+    if (!result.success || !("message" in result)) return;
+    assert.ok(String(result.message).includes(SAVED_PLAN_ALREADY_ACTIVE));
+    assert.ok(
+      "warnings" in result &&
+        Array.isArray(result.warnings) &&
+        result.warnings.some((issue) => issue.code === "stacked_stress"),
+    );
+  });
+
+  it("accepts an update operation that changes distance and effort", async () => {
+    const { asSchema } = await import("ai");
+    const { createCoachTools, normalizeScheduleEditInput } = await import("@/lib/tools");
+    const editTool = createCoachTools("user-test").edit_plan_schedule;
+    const schema = asSchema(editTool.inputSchema);
+    const validated = await schema.validate!({
+      reason: null,
+      operations: [
+        {
+          op: "modify",
+          weekNumber: 3,
+          dayOfWeek: 6,
+          matchTitle: null,
+          title: "Long Sunday",
+          type: "long_run",
+          description: null,
+          distanceMiles: 14,
+          durationMin: null,
+          targetPace: null,
+          effortLevel: "steady",
+          replace: false,
+        },
+      ],
+    });
+    assert.equal(validated.success, true, validated.success ? "" : validated.error.message);
+    if (!validated.success) return;
+    const normalized = normalizeScheduleEditInput(validated.value);
+    assert.equal(normalized.ok, true);
+    if (!normalized.ok) return;
+    assert.equal(normalized.operations[0]?.op, "update");
+    if (normalized.operations[0]?.op !== "update") return;
+    assert.equal(normalized.operations[0].patch.distanceMiles, 14);
+    assert.equal(normalized.operations[0].patch.type, "long");
+    assert.equal(normalized.operations[0].patch.effortLevel, "steady");
+    assert.equal(normalized.operations[0].patch.title, "Long Sunday");
   });
 
   it("accepts null reason and a Sunday sent as day 7 on edit_plan_schedule", async () => {

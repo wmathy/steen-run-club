@@ -8,7 +8,12 @@ import {
 } from "@/lib/google-calendar";
 import { handlePlanSave, handlePlanScheduleEdit } from "@/lib/plan-actions";
 import type { PlanWorkoutDraft, PlanWeekDraft } from "@/lib/plan-model";
-import { workoutIsoDate, clampRaceTaperDays, type NormalizedPlan } from "@/lib/plan-rules";
+import {
+  clampRaceTaperDays,
+  weekRunningMiles,
+  workoutIsoDate,
+  type NormalizedPlan,
+} from "@/lib/plan-rules";
 import {
   activePlanRunningMiles,
   createPrismaPlanRepository,
@@ -18,7 +23,7 @@ import {
   type PlanWriteMode,
   type PlanWriteReason,
 } from "@/lib/plan-policy";
-import type { ScheduleOperation } from "@/lib/plan-edit";
+import type { ScheduleOperation, WorkoutPatch } from "@/lib/plan-edit";
 import {
   blankToUndefined,
   canonicalIsoDate,
@@ -84,6 +89,43 @@ const dayRefSchema = z.object({
   weekNumber: z.number().int().min(1).max(MAX_PLAN_WEEKS),
   dayOfWeek: looseDayOfWeek,
 });
+
+function scheduleUpdateOp(op: "update" | "modify" | "upsert") {
+  return z.object({
+    op: z.literal(op),
+    weekNumber: z.number().int().min(1).max(MAX_PLAN_WEEKS).nullish(),
+    dayOfWeek: looseDayOfWeek,
+    date: z
+      .string()
+      .nullish()
+      .describe(
+        "YYYY-MM-DD for the workout. A time suffix is stripped. Use this instead of weekNumber + dayOfWeek when you know the calendar date. A date wins if both are sent.",
+      ),
+    matchTitle: looseText(200).describe(
+      "Current workout title on that day. Set this when several workouts share the day, or to rename that workout.",
+    ),
+    title: looseText(200).describe(
+      "New title. A title that is not already on the day adds a workout. Required when the day is empty or replace is true.",
+    ),
+    type: z
+      .string()
+      .nullish()
+      .describe(
+        "easy, tempo, interval, long, race, rest, strength, or cross. Aliases such as recovery, threshold, long_run, and lift are normalized.",
+      ),
+    description: looseText(4000),
+    distanceMiles: looseMeasure,
+    durationMin: looseMeasure,
+    targetPace: looseText(80),
+    effortLevel: looseText(80).describe(
+      'How the day should feel, for example "easy", "steady", or "hard".',
+    ),
+    replace: z
+      .boolean()
+      .nullish()
+      .describe("When true, this workout replaces everything else on that day."),
+  });
+}
 
 export type SavedPlanRecord = {
   id: string;
@@ -209,6 +251,14 @@ export function normalizeSavePlanToolInput(input: {
   };
 }
 
+function normalizeUpdateMeasure(
+  value: number | null | undefined,
+): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || !Number.isFinite(value) || value <= 0) return null;
+  return value > 2000 ? 2000 : value;
+}
+
 function normalizeScheduleDay(
   value: number | null | undefined,
   label: string,
@@ -248,6 +298,21 @@ export function normalizeScheduleEditInput(input: {
         title?: string | null;
         days: number;
       }
+    | {
+        op: "update" | "modify" | "upsert";
+        weekNumber?: number | null;
+        dayOfWeek?: number | null;
+        date?: string | null;
+        matchTitle?: string | null;
+        title?: string | null;
+        type?: string | null;
+        description?: string | null;
+        distanceMiles?: number | null;
+        durationMin?: number | null;
+        targetPace?: string | null;
+        effortLevel?: string | null;
+        replace?: boolean | null;
+      }
   > | null;
 }):
   | { ok: true; reason: PlanWriteReason; operations: ScheduleOperation[] }
@@ -285,6 +350,72 @@ export function normalizeScheduleEditInput(input: {
         b: { weekNumber: operation.b.weekNumber, dayOfWeek: b.day },
       });
       continue;
+    }
+    if (
+      operation.op === "update" ||
+      operation.op === "modify" ||
+      operation.op === "upsert"
+    ) {
+      const date = canonicalIsoDate(operation.date ?? undefined);
+      let weekNumber = operation.weekNumber ?? undefined;
+      let dayOfWeek: number | undefined;
+      if (!date) {
+        if (weekNumber == null) {
+          return {
+            ok: false,
+            error: "update needs a weekNumber and dayOfWeek, or a date.",
+          };
+        }
+        const day = normalizeScheduleDay(operation.dayOfWeek, "update");
+        if (!day.ok) return day;
+        dayOfWeek = day.day;
+      }
+      const patch: WorkoutPatch = {};
+      const title = blankToUndefined(operation.title ?? undefined);
+      if (title) patch.title = title.slice(0, 200);
+      if (typeof operation.type === "string" && operation.type.trim()) {
+        patch.type = normalizeWorkoutType(operation.type, operation.distanceMiles);
+      }
+      if (typeof operation.description === "string") {
+        const description = blankToUndefined(operation.description);
+        if (description) patch.description = description.slice(0, 4000);
+      }
+      if (typeof operation.distanceMiles === "number") {
+        const miles = normalizeUpdateMeasure(operation.distanceMiles);
+        if (miles != null) patch.distanceMiles = miles;
+      }
+      if (typeof operation.durationMin === "number") {
+        const duration = normalizeUpdateMeasure(operation.durationMin);
+        if (duration != null) patch.durationMin = duration;
+      }
+      if (typeof operation.targetPace === "string") {
+        const pace = blankToUndefined(operation.targetPace);
+        if (pace) patch.targetPace = pace.slice(0, 80);
+      }
+      if (typeof operation.effortLevel === "string") {
+        const effort = blankToUndefined(operation.effortLevel);
+        if (effort) patch.effortLevel = effort.slice(0, 80);
+      }
+      if (Object.keys(patch).length === 0) {
+        return {
+          ok: false,
+          error:
+            "update needs a workout field to change (distanceMiles, type, title, description, targetPace, or effortLevel).",
+        };
+      }
+      operations.push({
+        op: "update",
+        weekNumber,
+        dayOfWeek,
+        date,
+        matchTitle: blankToUndefined(operation.matchTitle ?? undefined),
+        replace: operation.replace === true,
+        patch,
+      });
+      continue;
+    }
+    if (operation.op !== "shift") {
+      return { ok: false, error: "Unsupported schedule operation." };
     }
     if (operation.days === 0) {
       return { ok: false, error: "days cannot be 0" };
@@ -497,6 +628,7 @@ export function createCoachTools(
               weekNumber: w.weekNumber,
               focus: w.focus,
               notes: w.notes,
+              totalMiles: weekRunningMiles(w.workouts),
               workouts: w.workouts.map((wo) => ({
                 id: wo.id,
                 dayOfWeek: wo.dayOfWeek,
@@ -507,6 +639,7 @@ export function createCoachTools(
                 distanceMiles: wo.distanceMiles,
                 durationMin: wo.durationMin,
                 targetPace: wo.targetPace,
+                effortLevel: wo.effortLevel,
                 completed: wo.completed,
                 completionStatus: wo.completionStatus,
               })),
@@ -570,7 +703,7 @@ export function createCoachTools(
 
     save_or_update_plan: tool({
       description:
-        "Create or replace the athlete's full training plan in one call. weeks is required: include every week and its workouts in this same call, with each workout description kept to 1-2 sentences (warm-up, main set, cool-down). A missing or empty weeks array is not saved. dayOfWeek is 0=Monday through 6=Sunday (Friday is 4); 7 is accepted as Sunday. Workout type may be a common alias (recovery, threshold, vo2, long_run, lift, bjj, off) and is normalized. Optional fields may be null. reason may be omitted. Race plans should set raceDate and a type race workout on that date (set date to raceDate). taperDays is clamped to 10–14 (default 12) when a race is set. The server rejects stacked hard days, a reckless mileage jump once volume is near the top of the block, a long-run jump, quality inside the taper, and a missing race-day workout. Easy-mile share, cutback weeks, phase-to-phase volume, and taper volume are coaching notes and do not block the save. If the tool returns errors, fix them and call again with the full weeks array before telling the athlete the plan is saved. For a move/shift/swap of existing workouts, use edit_plan_schedule instead. Do not call this to add make-up miles for missed work unless the athlete clearly agreed.",
+        "Create or replace the athlete's full training plan in one call. weeks is required: include every week and its workouts in this same call, with each workout description kept to 1-2 sentences (warm-up, main set, cool-down). A missing or empty weeks array is not saved. dayOfWeek is 0=Monday through 6=Sunday (Friday is 4); 7 is accepted as Sunday. Workout type may be a common alias (recovery, threshold, vo2, long_run, lift, bjj, off) and is normalized. Optional fields may be null. reason may be omitted. Race plans should set raceDate and a type race workout on that date (set date to raceDate). taperDays is clamped to 10–14 (default 12) when a race is set. A plan with at least one week and one workout is saved on the first call. Mileage ramps, long-run growth, stacked hard days, easy-mile share, phase labels, quality count, and taper volume or long-run length are coaching notes. They do not block the save. When the tool returns success true, the plan is already active — do NOT call save_or_update_plan again in this turn unless the athlete asks for another change. Briefly summarize the updated plan. Call again only when success is false (empty weeks, no workouts, a missing race-day workout, or a taper that starts before the plan). For a move, shift, swap, or a change to distance, type, title, description, pace, or effort on existing days, use edit_plan_schedule instead of rewriting the whole plan. Do not call this to add make-up miles for missed work unless the athlete clearly agreed.",
       inputSchema: z.object({
         title: z.string().min(1).max(200),
         goal: looseText(1000),
@@ -616,6 +749,10 @@ export function createCoachTools(
       execute: async (input) => {
         const normalized = normalizeSavePlanToolInput(input);
         if (!normalized.ok) {
+          console.warn("[chat][tool] save_or_update_plan", {
+            ok: false,
+            error: normalized.error,
+          });
           return {
             success: false as const,
             error: normalized.error,
@@ -632,6 +769,11 @@ export function createCoachTools(
           draft: normalized.draft,
         });
         if (!decision.success) {
+          console.warn("[chat][tool] save_or_update_plan", {
+            ok: false,
+            weeks: normalized.draft.weeks.length,
+            issueCodes: (decision.issues ?? []).map((issue) => issue.code),
+          });
           return {
             success: false,
             message: decision.message,
@@ -651,6 +793,11 @@ export function createCoachTools(
           (n, w) => n + w.workouts.length,
           0,
         );
+        console.info("[chat][tool] save_or_update_plan", {
+          ok: true,
+          weeks: plan.weeks.length,
+          warningCodes: decision.warnings.map((issue) => issue.code),
+        });
 
         return {
           success: true,
@@ -667,7 +814,7 @@ export function createCoachTools(
 
     edit_plan_schedule: tool({
       description:
-        "Move, swap, or shift workouts on the athlete's stored active plan. Call this whenever they ask to move, shift, swap, switch, or reschedule a workout or a day — then confirm only after it returns success. This writes the Plan tab. Do not only talk about the change. Do not use this to force make-up miles after a missed workout unless they asked to move that workout or clearly agreed. reason is optional and defaults to schedule_edit.",
+        "Move, swap, shift, or update workouts on the athlete's stored active plan. Call this whenever they ask to move, shift, swap, switch, reschedule, lengthen, shorten, or change a workout — then confirm only after it returns success. op update (also modify or upsert) changes distanceMiles, type, title, description, targetPace, or effortLevel on a weekNumber + dayOfWeek or a date, and can add a workout on that day. replace true makes it the only workout that day. Week mileage is recalculated and returned in the message. Use this instead of save_or_update_plan for a few days, such as longer weekend runs or turning one easy day into a workout. This writes the Plan tab. Do not only talk about the change. Do not use this to force make-up miles after a missed workout unless they asked to move that workout or clearly agreed. reason is optional and defaults to schedule_edit.",
       inputSchema: z.object({
         reason: z.string().nullish(),
         operations: z
@@ -697,18 +844,25 @@ export function createCoachTools(
                 ),
                 days: z.number().int().min(-60).max(60),
               }),
+              scheduleUpdateOp("update"),
+              scheduleUpdateOp("modify"),
+              scheduleUpdateOp("upsert"),
             ]),
           )
           .min(1)
-          .max(12),
+          .max(24),
       }),
       execute: async (input) => {
         const normalized = normalizeScheduleEditInput(input);
         if (!normalized.ok) {
+          console.warn("[chat][tool] edit_plan_schedule", {
+            ok: false,
+            error: normalized.error,
+          });
           return { success: false, message: normalized.error };
         }
         try {
-          return await handlePlanScheduleEdit({
+          const result = await handlePlanScheduleEdit({
             repo: planRepository,
             userId,
             mode,
@@ -716,8 +870,25 @@ export function createCoachTools(
             reason: normalized.reason,
             operations: normalized.operations,
           });
+          if (result.success) {
+            console.info("[chat][tool] edit_plan_schedule", {
+              ok: true,
+              ops: normalized.operations.map((operation) => operation.op),
+            });
+          } else {
+            console.warn("[chat][tool] edit_plan_schedule", {
+              ok: false,
+              ops: normalized.operations.map((operation) => operation.op),
+              message: result.message,
+            });
+          }
+          return result;
         } catch (err) {
           console.error("edit_plan_schedule failed:", err);
+          console.warn("[chat][tool] edit_plan_schedule", {
+            ok: false,
+            message: "Couldn't update the plan. Please try that change again.",
+          });
           return {
             success: false,
             message:

@@ -123,6 +123,8 @@ model PlanWorkout {
   durationMin   Float?
   /// Suggested pace, e.g. "9:30/mi", "7:45–8:00/mi", "easy conversational"
   targetPace    String?
+  /// How the day should feel when the coach sets it apart from pace: easy, steady, hard.
+  effortLevel   String?
   completed     Boolean   @default(false)
   /// How the athlete marked the day: as_planned | modified | null
   completionStatus String?

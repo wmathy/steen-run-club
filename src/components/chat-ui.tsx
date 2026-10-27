@@ -12,7 +12,9 @@ import {
   isXaiCreditsOrSpendingLimitError,
 } from "@/lib/coach-errors";
 import {
+  coachTranscriptStatus,
   isCoachReplyPending,
+  isCoachTurnBusy,
   messagesToDisplay,
 } from "@/lib/coach-message-display";
 
@@ -232,8 +234,11 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
     requestAnimationFrame(() => scrollToBottom(behavior));
   }, [messages, status]);
 
-  const busy = isCoachReplyPending(status);
-  const listStatus = streamRecovered ? "ready" : status;
+  const busy = isCoachTurnBusy(status, checkingSavedReply);
+  const listStatus = coachTranscriptStatus(status, {
+    streamRecovered,
+    checkingSavedReply,
+  });
 
   function sendUserText(text: string) {
     cancelStreamRecovery();
@@ -327,20 +332,15 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
 
         <CoachMessageList messages={messages} status={listStatus} />
 
-        {checkingSavedReply && !error && (
+        {checkingSavedReply && (
           <div className="rounded-lg border border-card-border bg-card/80 px-3 py-2 text-sm text-muted">
             Connection interrupted. Checking whether Coach finished saving…
           </div>
         )}
 
-        {error && !streamRecovered && (
+        {error && !streamRecovered && !checkingSavedReply && (
           <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
             {coachErrorMessage(error)}
-            {checkingSavedReply && (
-              <p className="mt-1 text-xs">
-                Connection interrupted. Checking whether Coach finished saving…
-              </p>
-            )}
           </div>
         )}
 

@@ -1,5 +1,5 @@
 /**
- * Applies move / swap / shift operations to a stored plan.
+ * Applies move / swap / shift / update operations to a stored plan.
  * The Plan tab dates workouts from week number + dayOfWeek, so the edit
  * has to change those fields or the athlete never sees it.
  */
@@ -11,13 +11,25 @@ import {
   dateForPlanSlot,
   mondayOf,
   planDayName,
+  slotForDate,
   slotFromAbsolute,
 } from "@/lib/plan-dates";
 import type { StoredPlan, StoredWeek, StoredWorkout } from "@/lib/plan-model";
+import { weekRunningMiles } from "@/lib/plan-rules";
 
 export type DayRef = {
   weekNumber: number;
   dayOfWeek: number;
+};
+
+export type WorkoutPatch = {
+  type?: string;
+  title?: string;
+  description?: string | null;
+  distanceMiles?: number | null;
+  durationMin?: number | null;
+  targetPace?: string | null;
+  effortLevel?: string | null;
 };
 
 export type ScheduleOperation =
@@ -39,6 +51,18 @@ export type ScheduleOperation =
       title?: string;
       /** Positive moves later, negative moves earlier. */
       days: number;
+    }
+  | {
+      op: "update";
+      weekNumber?: number;
+      dayOfWeek?: number;
+      /** Calendar day. Wins over weekNumber + dayOfWeek when both are set. */
+      date?: string;
+      /** Current title, when the day has more than one workout. */
+      matchTitle?: string;
+      /** Replace every workout on that day with this one. */
+      replace?: boolean;
+      patch: WorkoutPatch;
     };
 
 type Located = {
@@ -132,6 +156,203 @@ function slotError(weekNumber: number, dayOfWeek: number): string | null {
   if (dayOfWeek < 0 || dayOfWeek > 6) {
     return "That day is outside Monday–Sunday. Nothing was changed.";
   }
+  return null;
+}
+
+function milesLabel(miles: number | null | undefined): string {
+  const n = typeof miles === "number" && Number.isFinite(miles) ? miles : 0;
+  const rounded = Math.round(n * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+function weekTotalLabel(plan: StoredPlan, weekNumber: number): string {
+  const week = plan.weeks.find((item) => item.weekNumber === weekNumber);
+  const total = week ? weekRunningMiles(week.workouts) : 0;
+  return `Week ${weekNumber} total is now ${milesLabel(total)} miles.`;
+}
+
+function resolveUpdateDay(
+  plan: StoredPlan,
+  operation: Extract<ScheduleOperation, { op: "update" }>,
+): { ok: true; ref: DayRef } | { ok: false; message: string } {
+  if (operation.date) {
+    const slot = slotForDate(plan.startDate, operation.date);
+    if (!slot) {
+      return {
+        ok: false,
+        message: `${operation.date} is before this plan starts (${plan.startDate}). Nothing was changed.`,
+      };
+    }
+    const err = slotError(slot.weekNumber, slot.dayOfWeek);
+    if (err) return { ok: false, message: err };
+    return { ok: true, ref: slot };
+  }
+  if (operation.weekNumber == null || operation.dayOfWeek == null) {
+    return {
+      ok: false,
+      message: "Name the week and day to update, or send a date. Nothing was changed.",
+    };
+  }
+  const err = slotError(operation.weekNumber, operation.dayOfWeek);
+  if (err) return { ok: false, message: err };
+  return {
+    ok: true,
+    ref: { weekNumber: operation.weekNumber, dayOfWeek: operation.dayOfWeek },
+  };
+}
+
+function patchWorkout(workout: StoredWorkout, patch: WorkoutPatch): string[] {
+  const notes: string[] = [];
+  if (patch.type != null && patch.type !== workout.type) {
+    notes.push(`type ${workout.type} → ${patch.type}`);
+    workout.type = patch.type;
+  }
+  if (patch.title != null && patch.title !== workout.title) {
+    notes.push(`title "${workout.title}" → "${patch.title}"`);
+    workout.title = patch.title;
+  }
+  if (
+    patch.description !== undefined &&
+    (patch.description ?? null) !== (workout.description ?? null)
+  ) {
+    workout.description = patch.description;
+    notes.push("description");
+  }
+  if (
+    patch.distanceMiles !== undefined &&
+    (patch.distanceMiles ?? null) !== (workout.distanceMiles ?? null)
+  ) {
+    notes.push(
+      `distance ${milesLabel(workout.distanceMiles)} → ${milesLabel(patch.distanceMiles)} mi`,
+    );
+    workout.distanceMiles = patch.distanceMiles;
+  }
+  if (
+    patch.durationMin !== undefined &&
+    (patch.durationMin ?? null) !== (workout.durationMin ?? null)
+  ) {
+    notes.push(
+      `duration ${milesLabel(workout.durationMin)} → ${milesLabel(patch.durationMin)} min`,
+    );
+    workout.durationMin = patch.durationMin;
+  }
+  if (
+    patch.targetPace !== undefined &&
+    (patch.targetPace ?? null) !== (workout.targetPace ?? null)
+  ) {
+    workout.targetPace = patch.targetPace;
+    notes.push("pace");
+  }
+  if (
+    patch.effortLevel !== undefined &&
+    (patch.effortLevel ?? null) !== (workout.effortLevel ?? null)
+  ) {
+    notes.push(patch.effortLevel ? `effort ${patch.effortLevel}` : "effort cleared");
+    workout.effortLevel = patch.effortLevel;
+  }
+  return notes;
+}
+
+function insertWorkout(
+  plan: StoredPlan,
+  ref: DayRef,
+  patch: WorkoutPatch & { title: string },
+): StoredWorkout {
+  const workout: StoredWorkout = {
+    id: `edit_${crypto.randomUUID()}`,
+    dayOfWeek: ref.dayOfWeek,
+    date: dateForPlanSlot(plan.startDate, ref.weekNumber, ref.dayOfWeek),
+    type: patch.type ?? "easy",
+    title: patch.title,
+    description: patch.description ?? null,
+    distanceMiles: patch.distanceMiles ?? null,
+    durationMin: patch.durationMin ?? null,
+    targetPace: patch.targetPace ?? null,
+    effortLevel: patch.effortLevel ?? null,
+    completed: false,
+    completionStatus: null,
+  };
+  const week = ensureWeek(plan, ref.weekNumber);
+  week.workouts.push(workout);
+  week.workouts.sort((a, b) => a.dayOfWeek - b.dayOfWeek);
+  return workout;
+}
+
+function clearDay(plan: StoredPlan, ref: DayRef) {
+  for (const week of plan.weeks) {
+    if (week.weekNumber !== ref.weekNumber) continue;
+    week.workouts = week.workouts.filter((workout) => workout.dayOfWeek !== ref.dayOfWeek);
+  }
+}
+
+function workoutSummary(workout: StoredWorkout): string {
+  const miles =
+    workout.distanceMiles != null ? `, ${milesLabel(workout.distanceMiles)} mi` : "";
+  const effort = workout.effortLevel ? `, ${workout.effortLevel}` : "";
+  return `${workout.type}${miles}${effort}`;
+}
+
+function applyUpdateOperation(
+  plan: StoredPlan,
+  operation: Extract<ScheduleOperation, { op: "update" }>,
+  changes: string[],
+): string | null {
+  const resolved = resolveUpdateDay(plan, operation);
+  if (!resolved.ok) return resolved.message;
+  const ref = resolved.ref;
+  const dayWorkouts = findMatches(plan, ref);
+
+  if (operation.replace) {
+    const title = operation.patch.title ?? operation.matchTitle;
+    if (!title) {
+      return "Name the workout when replacing a day. Nothing was changed.";
+    }
+    clearDay(plan, ref);
+    const created = insertWorkout(plan, ref, { ...operation.patch, title });
+    changes.push(
+      `Replaced ${dayLabel(ref.weekNumber, ref.dayOfWeek)} with ${created.title} (${workoutSummary(created)}). ${weekTotalLabel(plan, ref.weekNumber)}`,
+    );
+    return null;
+  }
+
+  let matches: Located[] = [];
+  if (operation.matchTitle) {
+    matches = findMatches(plan, { ...ref, title: operation.matchTitle });
+    if (matches.length === 0 && dayWorkouts.length > 0) {
+      return `No workout titled "${operation.matchTitle}" on ${dayLabel(ref.weekNumber, ref.dayOfWeek)}. That day has: ${dayContents(plan, ref)}. Nothing was changed.`;
+    }
+  } else if (operation.patch.title) {
+    const titled = findMatches(plan, { ...ref, title: operation.patch.title });
+    if (titled.length > 0) matches = titled;
+    else if (dayWorkouts.length <= 1) matches = dayWorkouts;
+  } else if (dayWorkouts.length === 1) {
+    matches = dayWorkouts;
+  } else if (dayWorkouts.length > 1) {
+    return `Several workouts are on ${dayLabel(ref.weekNumber, ref.dayOfWeek)} (${dayWorkouts.map((item) => item.workout.title).join(", ")}). Name the one to update. Nothing was changed.`;
+  }
+
+  if (matches.length === 0) {
+    const title = operation.patch.title ?? operation.matchTitle;
+    if (!title) {
+      return `Nothing is scheduled on ${dayLabel(ref.weekNumber, ref.dayOfWeek)}. Name the workout to add. Nothing was changed.`;
+    }
+    const created = insertWorkout(plan, ref, { ...operation.patch, title });
+    changes.push(
+      `Added ${created.title} on ${dayLabel(ref.weekNumber, ref.dayOfWeek)} (${workoutSummary(created)}). ${weekTotalLabel(plan, ref.weekNumber)}`,
+    );
+    return null;
+  }
+
+  const notes: string[] = [];
+  for (const item of matches) {
+    const before = item.workout.title;
+    const detail = patchWorkout(item.workout, operation.patch);
+    item.workout.date = dateForPlanSlot(plan.startDate, ref.weekNumber, ref.dayOfWeek);
+    notes.push(detail.length > 0 ? `${before} (${detail.join(", ")})` : before);
+  }
+  changes.push(
+    `Updated ${notes.join("; ")} on ${dayLabel(ref.weekNumber, ref.dayOfWeek)}. ${weekTotalLabel(plan, ref.weekNumber)}`,
+  );
   return null;
 }
 
@@ -229,6 +450,12 @@ export function applyScheduleOperations(
       changes.push(
         `Moved ${titles} from ${dayLabel(operation.from.weekNumber, operation.from.dayOfWeek)} to ${dayLabel(operation.toWeekNumber, operation.toDayOfWeek)}.`,
       );
+      continue;
+    }
+
+    if (operation.op === "update") {
+      const message = applyUpdateOperation(plan, operation, changes);
+      if (message) return { ok: false, message };
       continue;
     }
 
