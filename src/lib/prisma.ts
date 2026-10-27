@@ -1,6 +1,7 @@
 import { PrismaClient } from "@/generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
+import { normalizePostgresConnectionString } from "@/lib/postgres-url";
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
@@ -24,7 +25,7 @@ function createPrismaClient() {
   const pool =
     globalForPrisma.pgPool ??
     new Pool({
-      connectionString: url,
+      connectionString: normalizePostgresConnectionString(url),
       // Serverless-friendly: don't keep idle clients forever
       max: 10,
       idleTimeoutMillis: 20_000,

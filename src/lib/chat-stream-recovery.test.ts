@@ -47,6 +47,23 @@ describe("saved chat recovery", () => {
     assert.equal(hasNewAssistantReply(client, serverAfterSave), true);
   });
 
+  it("finds a saved reply when earlier failed sends left extra user messages on the client", () => {
+    const client = [
+      user("u-old", "Earlier question"),
+      user("u-failed", "this send never reached the server"),
+      user("u-new", "Build the 10-week plan"),
+    ];
+    const server = [
+      user("u-old", "Earlier question"),
+      assistant("a-old", "Here is the first answer."),
+      user("u-new", "Build the 10-week plan"),
+      assistant("a-new", "Your sub-18 block is on the Plan tab."),
+    ];
+    assert.equal(client.filter((message) => message.role === "user").length, 3);
+    assert.equal(server.filter((message) => message.role === "user").length, 2);
+    assert.equal(hasNewAssistantReply(client, server), true);
+  });
+
   it("accepts a fuller copy of the assistant the dropped stream already started", () => {
     const partial = assistant("a1", "Working");
     const full = assistant("a1", "Your sub-18 block is on the Plan tab.");
