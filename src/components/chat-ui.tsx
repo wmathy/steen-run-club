@@ -14,6 +14,7 @@ import {
 import { isXaiCreditsOrSpendingLimitError } from "@/lib/coach-errors";
 import {
   isCoachReplyPending,
+  isCoachTurnBusy,
   messagesToDisplay,
 } from "@/lib/coach-message-display";
 
@@ -274,7 +275,7 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
     requestAnimationFrame(() => scrollToBottom(behavior));
   }, [messages, status]);
 
-  const busy = isCoachReplyPending(status);
+  const busy = isCoachTurnBusy(status, checkingSavedReply);
   const creditError = isXaiCreditsOrSpendingLimitError(error);
 
   function sendUserText(text: string) {

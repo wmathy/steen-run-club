@@ -45,6 +45,16 @@ function codes(draft: PlanDraft): string[] {
   return issuesOf(draft).map((issue) => issue.code);
 }
 
+function warningsOf(draft: PlanDraft) {
+  const result = preparePlanForSave(draft);
+  assert.equal(
+    result.ok,
+    true,
+    result.ok ? "" : result.issues.map((issue) => issue.message).join("\n"),
+  );
+  return result.ok ? result.warnings : [];
+}
+
 /**
  * Eight Monday-weeks ending on a Sunday race.
  * Load steps up, then cuts back, and the taper window stays easy.
@@ -152,7 +162,7 @@ describe("taper length", () => {
 });
 
 describe("progressive load", () => {
-  it("rejects a mileage jump over 20%", () => {
+  it("saves a mileage jump over 20% and keeps the coaching note", () => {
     const draft: PlanDraft = {
       title: "Too fast",
       startDate: START,
@@ -167,10 +177,11 @@ describe("progressive load", () => {
         },
       ],
     };
-    assert.ok(codes(draft).includes("mileage_ramp"));
+    assert.ok(warningsOf(draft).some((issue) => issue.code === "mileage_ramp"));
+    assert.equal(codes(draft).includes("mileage_ramp"), false);
   });
 
-  it("rejects a long run that jumps too far", () => {
+  it("saves a long run that jumps too far and keeps the coaching note", () => {
     const draft: PlanDraft = {
       title: "Long jump",
       startDate: START,
@@ -185,10 +196,10 @@ describe("progressive load", () => {
         },
       ],
     };
-    assert.ok(codes(draft).includes("long_run_jump"));
+    assert.ok(warningsOf(draft).some((issue) => issue.code === "long_run_jump"));
   });
 
-  it("rejects back-to-back hard days", () => {
+  it("saves back-to-back hard days and keeps the coaching note", () => {
     const draft: PlanDraft = {
       title: "Stacked",
       startDate: START,
@@ -203,7 +214,84 @@ describe("progressive load", () => {
         },
       ],
     };
-    assert.ok(codes(draft).includes("stacked_stress"));
+    assert.ok(warningsOf(draft).some((issue) => issue.code === "stacked_stress"));
+  });
+
+  it("does not flag a return to the pre-cutback peak", () => {
+    const draft: PlanDraft = {
+      title: "Cutback return",
+      startDate: START,
+      weeks: [
+        {
+          weekNumber: 1,
+          workouts: [workout(0, "easy", "Easy", 20), workout(5, "long", "Long", 12)],
+        },
+        {
+          weekNumber: 2,
+          workouts: [workout(0, "easy", "Easy", 12), workout(5, "long", "Long", 6)],
+        },
+        {
+          weekNumber: 3,
+          workouts: [workout(0, "easy", "Easy", 20), workout(5, "long", "Long", 12)],
+        },
+      ],
+    };
+    const warnings = warningsOf(draft);
+    assert.equal(
+      warnings.some((issue) => issue.code === "mileage_ramp" || issue.code === "long_run_jump"),
+      false,
+    );
+  });
+
+  it("still notes a jump above the pre-cutback peak without blocking the save", () => {
+    const draft: PlanDraft = {
+      title: "Above the peak",
+      startDate: START,
+      weeks: [
+        {
+          weekNumber: 1,
+          workouts: [workout(0, "easy", "Easy", 20), workout(5, "long", "Long", 10)],
+        },
+        {
+          weekNumber: 2,
+          workouts: [workout(0, "easy", "Easy", 12), workout(5, "long", "Long", 6)],
+        },
+        {
+          weekNumber: 3,
+          workouts: [workout(0, "easy", "Easy", 28), workout(5, "long", "Long", 16)],
+        },
+      ],
+    };
+    const warnings = warningsOf(draft);
+    assert.ok(warnings.some((issue) => issue.code === "mileage_ramp"));
+    assert.ok(warnings.some((issue) => issue.code === "long_run_jump"));
+  });
+
+  it("rejects an empty plan and a week with no workouts", () => {
+    const empty = preparePlanForSave({
+      title: "Empty",
+      startDate: START,
+      weeks: [],
+    });
+    assert.equal(empty.ok, false);
+    if (!empty.ok) {
+      assert.ok(empty.issues.some((issue) => issue.code === "empty_weeks"));
+      assert.ok(empty.issues.some((issue) => issue.code === "no_workouts"));
+    }
+
+    const blank = preparePlanForSave({
+      title: "Blank week",
+      startDate: START,
+      weeks: [{ weekNumber: 1, workouts: [] }],
+    });
+    assert.equal(blank.ok, false);
+    if (!blank.ok) {
+      assert.ok(blank.issues.some((issue) => issue.code === "no_workouts"));
+      assert.equal(
+        blank.issues.some((issue) => issue.code === "empty_weeks"),
+        false,
+      );
+    }
   });
 
   it("notes a mostly-quality week without blocking the save", () => {
@@ -568,6 +656,18 @@ describe("low-volume 5K block", () => {
     );
     if (!result.ok) return;
     assert.ok(result.warnings.some((issue) => issue.code === "phase_load"));
+  });
+
+  it("saves a Build label on an early week and a long taper run as notes", () => {
+    const mislabeled = racePlan(14);
+    mislabeled.weeks[0]!.focus = "Build";
+    const focus = warningsOf(mislabeled);
+    assert.ok(focus.some((issue) => issue.code === "phase_focus"));
+
+    const longTaper = racePlan(14);
+    longTaper.weeks[6]!.workouts.push(workout(5, "long", "Still long", 8));
+    const taper = warningsOf(longTaper);
+    assert.ok(taper.some((issue) => issue.code === "taper_long_run"));
   });
 });
 

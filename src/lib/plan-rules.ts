@@ -35,7 +35,7 @@ export const MIN_TAPER_DAYS = 10;
 export const MAX_TAPER_DAYS = 14;
 /** Used when a race plan omits taperDays. Inside the 10–14 day window. */
 export const DEFAULT_TAPER_DAYS = 12;
-/** ~10% is the coaching guide; more than this is rejected. */
+/** ~10% is the coaching guide; more than this is a coaching note. */
 export const MAX_WEEKLY_MILEAGE_INCREASE = 0.2;
 /** Coaching target, and the hard floor once a week reaches high mileage. */
 export const MIN_EASY_MILE_SHARE = 0.75;
@@ -135,16 +135,30 @@ export function clampRaceTaperDays(
 }
 
 /**
- * These are coaching notes. A realistic post-race rebuild (low weeks, then
- * a climb toward normal mileage, a modest easy-mile share, a phase that
- * does not set a new peak, a taper that is a little high) must still save.
+ * Coaching notes. A structurally valid plan (at least one week and one
+ * workout) saves on the first call. These must not send the model back
+ * through another full-plan generation — each attempt costs about a minute
+ * and three of them blow the function timeout.
  */
 const SOFT_PLAN_ISSUE_CODES = new Set<string>([
   "mileage_cutback",
   "mileage_rebuild",
+  "mileage_ramp",
+  "long_run_jump",
+  "stacked_stress",
   "phase_load",
-  "taper_volume",
+  "phase_focus",
+  "peak_placement",
   "easy_share",
+  "quality_count",
+  "quality_cap",
+  "long_run_count",
+  "missing_long_run",
+  "taper_volume",
+  "taper_long_run",
+  "taper_hard_day",
+  "taper_late_intensity",
+  "taper_window",
 ]);
 
 function partitionPlanIssues(all: PlanIssue[]): {
@@ -367,17 +381,17 @@ Coaching methods to live, not lecture. Steve Magness: most running stays easy so
 ### Race plans progress toward race day
 Order is always base, then build, then peak, then taper, then race day. Early weeks are mostly easy aerobic volume. The build adds a little volume and one clear quality session. The peak is the highest sustainable load (or within about 10% of it), still with easy days truly easy. Do not put peak work before the base.
 
-### Taper (hard rule)
-When there is a goal race, set raceDate and taperDays. taperDays should be an integer from ${MIN_TAPER_DAYS} to ${MAX_TAPER_DAYS}. If you omit it or send a value outside that range, the server uses ${DEFAULT_TAPER_DAYS} and clamps into ${MIN_TAPER_DAYS}–${MAX_TAPER_DAYS}, so do not regenerate the plan just to fix taper length. That number is the days before race day, not counting race day itself. The plan must start on or before the taper starts, and race day needs a workout with type race. Taper running is easy and shorter — no tempo or interval in the taper window. A tune-up race belongs before the taper, not inside it. A taper that is a little high on volume still saves (it comes back as a coaching note). Quality inside the taper does not. If save_or_update_plan returns taper errors, fix the plan and save again. Do not tell the athlete a race plan is saved until the tool succeeds.
+### Taper
+When there is a goal race, set raceDate and taperDays. taperDays should be an integer from ${MIN_TAPER_DAYS} to ${MAX_TAPER_DAYS}. If you omit it or send a value outside that range, the server uses ${DEFAULT_TAPER_DAYS} and clamps into ${MIN_TAPER_DAYS}–${MAX_TAPER_DAYS}, so do not regenerate the plan just to fix taper length. That number is the days before race day, not counting race day itself. The plan must start on or before the taper starts, and race day needs a workout with type race. Taper running should be easy and shorter — no tempo or interval in the taper window. A tune-up race belongs before the taper, not inside it. A taper that is a little high on volume, a long run that is still a bit long, or a quality day inside the taper still saves and comes back as a coaching note. Do not regenerate the plan to chase those notes. If save_or_update_plan returns success false (empty weeks, no workouts, a missing race-day workout, or a taper that starts before the plan), fix that and save once more. When it returns success true, the plan is already active — summarize it for the athlete and do not call save_or_update_plan again in this turn unless they ask for another change.
 
 ### Week shape
 - Aim for about 75–80% of running miles easy, recovery, or a steady long run. Quality (tempo or interval) is at most ${MAX_QUALITY_SESSIONS_PER_WEEK} sessions in a week.
 - A week of about ${HIGH_VOLUME_WEEK_MILES} miles or more should stay near 75% easy miles. A modest week under ${HIGH_VOLUME_WEEK_MILES} miles should stay near 50% easy miles. Coming in under that is a coaching note, not a failed save — do not rebuild a whole block to chase the percentage. When the athlete wants less volume and more intensity (a sub-18 5K block, for example), warm-up and cool-down can live inside the tempo or interval, so that week may land around 50–70% easy. Do not pad junk miles.
 - On a modest-mileage block, build and peak do not have to set a new volume high. A dip versus the previous phase is fine. A large drop is a coaching note, not a reason to regenerate the plan.
-- Do not stack stress: tempo, interval, long run, and race day are not on back-to-back days. Easy, recovery, rest, strength, and cross-training may sit beside a long run.
-- One long run a week. Grow it patiently (about 10%, and never more than 2 miles or 20% above the previous long run).
-- Weekly mileage grows patiently. The guide is about 10%. Once mileage is near the top of the block, a jump over 20% is rejected. Climbing back from a post-race layoff (for example 12 to 18 to 24 miles on the way toward the mid-30s) saves on the first call. After three weeks that each add miles, a cutback is ideal, but a longer rebuild streak is only a coaching note — save the plan anyway.
-- General-fitness plans with no race skip the taper. The easy/hard balance, long-run growth, and mileage ramp still apply.
+- Do not stack stress: tempo, interval, long run, and race day should not land on back-to-back days. Easy, recovery, rest, strength, and cross-training may sit beside a long run. Back-to-back stress days are a coaching note. The plan still saves.
+- One long run a week. Grow it patiently (about 10%, and not more than 2 miles or 20% above the previous long run, or above the longest run before a cutback or recovery week). A bigger jump still saves and comes back as a coaching note.
+- Weekly mileage grows patiently. The guide is about 10%. Compare a jump with the pre-cutback peak, not with a recovery or cutback week: returning to that peak is normal and should not be treated as a reckless increase. Once mileage is near the top of the block, a jump over 20% above that peak is a coaching note, not a rejected save. Climbing back from a post-race layoff (for example 12 to 18 to 24 miles on the way toward the mid-30s) saves on the first call. After three weeks that each add miles, a cutback is ideal, but a longer rebuild streak is only a coaching note — save the plan anyway.
+- General-fitness plans with no race skip the taper. The easy/hard balance, long-run growth, and mileage ramp still apply as coaching notes. They do not block the save.
 
 ### Saving the plan (one call)
 save_or_update_plan must include the non-empty weeks array in the same call as the title and dates. Each week includes its workouts. Do not send a plan header first and the weeks later — a missing or empty weeks array returns an error and nothing is saved. Keep every workout description to 1-2 sentences (warm-up, main set, cool-down, and effort) so a 10-week plan fits in one fast call. dayOfWeek is 0=Monday through 6=Sunday (Friday is 4, not 5). On race day set type race, the matching dayOfWeek, and date to raceDate as YYYY-MM-DD.
@@ -386,7 +400,7 @@ save_or_update_plan must include the non-empty weeks array in the same call as t
 If they missed miles or a workout, you may suggest an optional make-up (short, easy, only if the week has room). Never demand it. Never guilt them. Do not change the stored plan for missed work unless they clearly agree ("yes", "go ahead", "please update the plan"). Use reason "agreed_makeup" only after that yes.
 
 ### Schedule changes
-If they ask to move, shift, swap, switch, or reschedule a workout or day, call edit_plan_schedule before you say it's done. That tool writes the stored plan. Do not only describe the new week.
+If they ask to move, shift, swap, switch, reschedule, lengthen, shorten, or change a workout or day, call edit_plan_schedule before you say it's done. Use op update to change distanceMiles, type, title, description, targetPace, or effortLevel on a weekNumber and dayOfWeek (or a date), or to add or replace the workout on that day. The week's mileage is recalculated. Prefer that over save_or_update_plan when they want a few days changed, such as longer weekend runs or a second workout in the week. That tool writes the stored plan. Do not only describe the new week.
 `.trim();
 }
 
@@ -410,11 +424,45 @@ function taperLengthIssue(
   return null;
 }
 
+export function weekRunningMiles(
+  workouts: Array<{ type: string; distanceMiles?: number | null }>,
+): number {
+  let total = 0;
+  for (const workout of workouts) {
+    if (!RUNNING_TYPES.has(workout.type)) continue;
+    total += milesOf(workout);
+  }
+  return Math.round(total * 10) / 10;
+}
+
 export function preparePlanForSave(
   draft: PlanDraft,
 ):
   | { ok: true; plan: NormalizedPlan; warnings: PlanIssue[] }
   | { ok: false; issues: PlanIssue[] } {
+  const workoutCount = draft.weeks.reduce(
+    (count, week) => count + week.workouts.length,
+    0,
+  );
+  if (draft.weeks.length === 0 || workoutCount === 0) {
+    const empty: PlanIssue[] = [];
+    if (draft.weeks.length === 0) {
+      empty.push({
+        code: "empty_weeks",
+        message:
+          "The plan has no weeks. Include the non-empty weeks array and its workouts in this save.",
+      });
+    }
+    if (workoutCount === 0) {
+      empty.push({
+        code: "no_workouts",
+        message:
+          "The plan has no workouts. Add at least one workout before saving.",
+      });
+    }
+    return { ok: false, issues: empty };
+  }
+
   const issues: PlanIssue[] = [];
   const seenWeeks = new Set<number>();
   for (const week of draft.weeks) {
@@ -829,6 +877,10 @@ function loadIssues(
   let increases = 0;
   let previousMiles: number | null = null;
   let previousLong: number | null = null;
+  // Running pre-cutback peak. A recovery or cutback week is not the baseline
+  // for the next build week — compare against the highest prior week.
+  let maxPriorMiles = 0;
+  let maxPriorLong = 0;
 
   for (const weekNumber of weekNumbers) {
     const workouts = byWeek.get(weekNumber) ?? [];
@@ -873,17 +925,29 @@ function loadIssues(
         message: `Week ${weekNumber} is only ${Math.round((easyMiles / miles) * 100)}% easy miles (${roundMiles(easyMiles)} of ${roundMiles(miles)}). Keep at least ${Math.round(easyFloor * 100)}% easy, recovery, or long-run miles.`,
       });
     }
-    if (previousMiles != null && previousMiles >= 5 && miles > previousMiles * (1 + MAX_WEEKLY_MILEAGE_INCREASE) + 0.05) {
-      const rebuildCeiling = maxTrainingMiles * 0.6;
-      const rebuilding =
-        previousMiles + 0.05 < rebuildCeiling &&
-        miles <= previousMiles * 1.6 + 0.05;
-      issues.push({
-        code: rebuilding ? "mileage_rebuild" : "mileage_ramp",
-        message: rebuilding
-          ? `Week ${weekNumber} climbs from ${roundMiles(previousMiles)} to ${roundMiles(miles)} while mileage is still returning toward this plan's peak (${roundMiles(maxTrainingMiles)}). That rebuild is allowed; weeks near the top should grow by about 10% and not more than 20%.`
-          : `Week ${weekNumber} jumps to ${roundMiles(miles)} miles from ${roundMiles(previousMiles)}. Hold the increase to about 10%, and not more than 20%.`,
-      });
+    if (
+      previousMiles != null &&
+      previousMiles >= 5 &&
+      miles > previousMiles * (1 + MAX_WEEKLY_MILEAGE_INCREASE) + 0.05
+    ) {
+      const peakBaseline = Math.max(previousMiles, maxPriorMiles);
+      const withinPriorPeak =
+        miles <= peakBaseline * (1 + MAX_WEEKLY_MILEAGE_INCREASE) + 0.05;
+      if (!withinPriorPeak) {
+        const rebuildCeiling = maxTrainingMiles * 0.6;
+        const rebuilding =
+          previousMiles + 0.05 < rebuildCeiling &&
+          miles <= previousMiles * 1.6 + 0.05;
+        const aboveCutbackPeak = maxPriorMiles > previousMiles + 0.05;
+        issues.push({
+          code: rebuilding ? "mileage_rebuild" : "mileage_ramp",
+          message: rebuilding
+            ? `Week ${weekNumber} climbs from ${roundMiles(previousMiles)} to ${roundMiles(miles)} while mileage is still returning toward this plan's peak (${roundMiles(maxTrainingMiles)}). That rebuild is allowed; weeks near the top should grow by about 10% and not more than 20%.`
+            : aboveCutbackPeak
+              ? `Week ${weekNumber} jumps to ${roundMiles(miles)} miles, above the pre-cutback peak of ${roundMiles(maxPriorMiles)} (last week was ${roundMiles(previousMiles)}). Hold the increase to about 10%, and not more than 20% above that peak.`
+              : `Week ${weekNumber} jumps to ${roundMiles(miles)} miles from ${roundMiles(previousMiles)}. Hold the increase to about 10%, and not more than 20%.`,
+        });
+      }
     }
     if (previousMiles != null) {
       if (miles > previousMiles + 0.05) {
@@ -904,14 +968,23 @@ function loadIssues(
         previousLong > 0 &&
         longMiles > previousLong + Math.max(2, previousLong * 0.2) + 0.05
       ) {
-        issues.push({
-          code: "long_run_jump",
-          message: `Week ${weekNumber} long run is ${roundMiles(longMiles)} miles after ${roundMiles(previousLong)}. Grow the long run by about 10%, and not more than 2 miles or 20%.`,
-        });
+        const peak = Math.max(previousLong, maxPriorLong);
+        const allowance = Math.max(2, peak * 0.2);
+        if (longMiles > peak + allowance + 0.05) {
+          const aboveCutbackPeak = maxPriorLong > previousLong + 0.05;
+          issues.push({
+            code: "long_run_jump",
+            message: aboveCutbackPeak
+              ? `Week ${weekNumber} long run is ${roundMiles(longMiles)} miles, above the pre-cutback long run of ${roundMiles(maxPriorLong)} (last long run was ${roundMiles(previousLong)}). Grow the long run by about 10%, and not more than 2 miles or 20% above that peak.`
+              : `Week ${weekNumber} long run is ${roundMiles(longMiles)} miles after ${roundMiles(previousLong)}. Grow the long run by about 10%, and not more than 2 miles or 20%.`,
+          });
+        }
       }
+      if (longMiles > maxPriorLong) maxPriorLong = longMiles;
       previousLong = longMiles;
     }
     if (training.some((workout) => RUNNING_TYPES.has(workout.type) && milesOf(workout) > 0)) {
+      if (miles > maxPriorMiles) maxPriorMiles = miles;
       previousMiles = miles;
     }
   }

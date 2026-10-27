@@ -6,7 +6,8 @@
 import { coachingTextFromMessage } from "@/lib/coach-message-display";
 
 export const CHAT_STREAM_RECOVERY_INTERVAL_MS = 4_000;
-export const CHAT_STREAM_RECOVERY_WINDOW_MS = 90_000;
+/** Long enough for one slow plan-generation turn after Safari drops the stream. */
+export const CHAT_STREAM_RECOVERY_WINDOW_MS = 240_000;
 
 export type RecoveryMessage = {
   id?: string;

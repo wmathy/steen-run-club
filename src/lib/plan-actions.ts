@@ -16,6 +16,9 @@ import {
   type NormalizedPlan,
 } from "@/lib/plan-rules";
 
+export const SAVED_PLAN_ALREADY_ACTIVE =
+  "Plan is already saved and active in the database — do NOT call save_or_update_plan again in this turn unless the athlete asks for another change. Briefly summarize the updated plan for the athlete.";
+
 export type PlanRepository = {
   loadActive(userId: string): Promise<StoredPlan | null>;
   saveSchedule(userId: string, plan: StoredPlan): Promise<StoredPlan>;
@@ -45,6 +48,14 @@ function slotsOf(plan: StoredPlan): Map<string, string> {
   return slots;
 }
 
+function workoutsOf(plan: StoredPlan): Map<string, StoredPlan["weeks"][number]["workouts"][number]> {
+  const workouts = new Map<string, StoredPlan["weeks"][number]["workouts"][number]>();
+  for (const week of plan.weeks) {
+    for (const workout of week.workouts) workouts.set(workout.id, workout);
+  }
+  return workouts;
+}
+
 function driftMessage(expected: StoredPlan, actual: StoredPlan): string | null {
   const wanted = slotsOf(expected);
   const got = slotsOf(actual);
@@ -61,6 +72,32 @@ function driftMessage(expected: StoredPlan, actual: StoredPlan): string | null {
   }
   if ((actual.taperDays ?? null) !== (expected.taperDays ?? null)) {
     return "taper length did not save.";
+  }
+  const wantedWorkouts = workoutsOf(expected);
+  const gotWorkouts = workoutsOf(actual);
+  for (const [id, workout] of wantedWorkouts) {
+    const saved = gotWorkouts.get(id);
+    if (!saved) return "a workout did not save.";
+    if (saved.type !== workout.type) return "a workout type did not save.";
+    if (saved.title !== workout.title) return "a workout title did not save.";
+    if ((saved.description ?? null) !== (workout.description ?? null)) {
+      return "a workout description did not save.";
+    }
+    if ((saved.distanceMiles ?? null) !== (workout.distanceMiles ?? null)) {
+      return "a workout distance did not save.";
+    }
+    if ((saved.durationMin ?? null) !== (workout.durationMin ?? null)) {
+      return "a workout duration did not save.";
+    }
+    if ((saved.targetPace ?? null) !== (workout.targetPace ?? null)) {
+      return "a workout pace did not save.";
+    }
+    if ((saved.effortLevel ?? null) !== (workout.effortLevel ?? null)) {
+      return "a workout effort did not save.";
+    }
+    if ((saved.date ?? null) !== (workout.date ?? null)) {
+      return "a workout date did not save.";
+    }
   }
   return null;
 }
@@ -185,7 +222,7 @@ export function handlePlanSave(input: {
       : null;
   const warningText =
     prepared.warnings.length > 0
-      ? ` Optional coaching notes (the plan is already saved; do not call save_or_update_plan again for these): ${prepared.warnings.map((issue) => issue.message).join(" ")}`
+      ? ` ${SAVED_PLAN_ALREADY_ACTIVE} Coaching notes: ${prepared.warnings.map((issue) => issue.message).join(" ")}`
       : "";
 
   return {

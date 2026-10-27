@@ -32,6 +32,7 @@ type PlanRow = {
       distanceMiles: number | null;
       durationMin: number | null;
       targetPace: string | null;
+      effortLevel: string | null;
       completed: boolean;
       completionStatus: string | null;
     }>;
@@ -54,6 +55,7 @@ function toSnapshot(plan: PlanRow): StoredPlan {
         distanceMiles: workout.distanceMiles,
         durationMin: workout.durationMin,
         targetPace: workout.targetPace,
+        effortLevel: workout.effortLevel,
         completed: workout.completed,
         completionStatus: workout.completionStatus,
       }),
@@ -121,20 +123,54 @@ export function createPrismaPlanRepository(): PlanRepository {
           byNumber.set(week.weekNumber, created);
         }
 
+        const existingWorkouts = await tx.planWorkout.findMany({
+          where: { week: { planId: next.id } },
+          select: { id: true },
+        });
+        const existingIds = new Set(existingWorkouts.map((workout) => workout.id));
+        const keepIds: string[] = [];
+
         for (const week of next.weeks) {
           const row = byNumber.get(week.weekNumber);
           if (!row) continue;
           for (const workout of week.workouts) {
-            await tx.planWorkout.update({
-              where: { id: workout.id },
-              data: {
-                weekId: row.id,
-                dayOfWeek: workout.dayOfWeek,
-                date: workout.date ? parseIsoDateAtNoon(workout.date) : null,
-              },
-            });
+            keepIds.push(workout.id);
+            const data = {
+              weekId: row.id,
+              dayOfWeek: workout.dayOfWeek,
+              date: workout.date ? parseIsoDateAtNoon(workout.date) : null,
+              type: workout.type,
+              title: workout.title,
+              description: workout.description,
+              distanceMiles: workout.distanceMiles,
+              durationMin: workout.durationMin,
+              targetPace: workout.targetPace,
+              effortLevel: workout.effortLevel,
+            };
+            if (existingIds.has(workout.id)) {
+              await tx.planWorkout.update({
+                where: { id: workout.id },
+                data,
+              });
+            } else {
+              await tx.planWorkout.create({
+                data: {
+                  id: workout.id,
+                  ...data,
+                  completed: workout.completed,
+                  completionStatus: workout.completionStatus,
+                },
+              });
+            }
           }
         }
+
+        await tx.planWorkout.deleteMany({
+          where:
+            keepIds.length === 0
+              ? { week: { planId: next.id } }
+              : { week: { planId: next.id }, id: { notIn: keepIds } },
+        });
 
         const remaining = await tx.planWorkout.findMany({
           where: { week: { planId: next.id } },

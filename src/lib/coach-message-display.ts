@@ -23,6 +23,30 @@ export function isCoachReplyPending(status: string): boolean {
 }
 
 /**
+ * Composer lock while a turn is streaming or while a dropped stream is still
+ * being recovered from the database. Recovery can outlast the browser error.
+ */
+export function isCoachTurnBusy(
+  status: string,
+  checkingSavedReply = false,
+): boolean {
+  return isCoachReplyPending(status) || checkingSavedReply;
+}
+
+/**
+ * Status passed to the transcript. Recovery keeps the thinking indicator up
+ * and holds the error banner back until polling finishes.
+ */
+export function coachTranscriptStatus(
+  status: string,
+  options: { streamRecovered?: boolean; checkingSavedReply?: boolean } = {},
+): string {
+  if (options.streamRecovered) return "ready";
+  if (options.checkingSavedReply) return "streaming";
+  return status;
+}
+
+/**
  * Coaching copy only. Tool calls, reasoning, and blank text parts stay out
  * of the bubble.
  */

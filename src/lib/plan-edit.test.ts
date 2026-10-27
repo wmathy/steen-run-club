@@ -21,6 +21,7 @@ function workout(
     distanceMiles: 4,
     durationMin: 40,
     targetPace: "easy",
+    effortLevel: null,
     completed: false,
     completionStatus: null,
     ...extra,
@@ -281,5 +282,115 @@ describe("plan schedule edits", () => {
     if (!result.success) assert.match(result.message, /taper/i);
     assert.equal(findWorkout(repo.current()!, "race")?.workout.dayOfWeek, 6);
     assert.equal(repo.current()?.raceDate, before?.raceDate);
+  });
+
+  it("lengthens a long run and reports the new week mileage", async () => {
+    const repo = memoryRepo(samplePlan());
+    const result = await handlePlanScheduleEdit({
+      repo,
+      userId: "user-1",
+      mode: "interactive",
+      userText: "Can we make Saturday's long run 12 miles?",
+      operations: [
+        {
+          op: "update",
+          weekNumber: 1,
+          dayOfWeek: 5,
+          matchTitle: "Long Saturday",
+          patch: { distanceMiles: 12, effortLevel: "steady" },
+        },
+      ],
+    });
+    assert.equal(result.success, true, result.success ? "" : result.message);
+    const stored = repo.current();
+    assert.ok(stored);
+    const long = findWorkout(stored, "long-sat");
+    assert.equal(long?.workout.distanceMiles, 12);
+    assert.equal(long?.workout.effortLevel, "steady");
+    assert.equal(long?.workout.type, "long");
+    assert.match(result.success ? result.message : "", /Week 1 total is now 20 miles/);
+  });
+
+  it("turns the only workout on a day into a tempo and can add one by date", async () => {
+    const repo = memoryRepo(samplePlan());
+    const sunday = dateForPlanSlot("2026-08-03", 2, 6);
+    const result = await handlePlanScheduleEdit({
+      repo,
+      userId: "user-1",
+      mode: "interactive",
+      userText: "Make Monday a tempo and add an easy spin on Sunday of week 2",
+      operations: [
+        {
+          op: "update",
+          weekNumber: 1,
+          dayOfWeek: 0,
+          patch: {
+            type: "tempo",
+            title: "Tempo Monday",
+            description: "2 mile warm-up, 20 minutes steady, 1 mile cool-down.",
+            targetPace: "7:45/mi",
+          },
+        },
+        {
+          op: "update",
+          date: sunday,
+          patch: {
+            title: "Easy spin",
+            type: "easy",
+            distanceMiles: 3,
+          },
+        },
+      ],
+    });
+    assert.equal(result.success, true, result.success ? "" : result.message);
+    const stored = repo.current();
+    assert.ok(stored);
+    const monday = findWorkout(stored, "easy-mon");
+    assert.equal(monday?.workout.type, "tempo");
+    assert.equal(monday?.workout.title, "Tempo Monday");
+    assert.equal(monday?.workout.completed, true);
+    assert.match(monday?.workout.description ?? "", /warm-up/);
+    const added = stored.weeks
+      .flatMap((week) => week.workouts)
+      .find((workout) => workout.title === "Easy spin");
+    assert.ok(added);
+    assert.equal(added.dayOfWeek, 6);
+    assert.equal(added.distanceMiles, 3);
+    assert.equal(added.date, sunday);
+    assert.equal(
+      stored.weeks.find((week) => week.weekNumber === 2)?.workouts.some(
+        (workout) => workout.title === "Easy Friday",
+      ),
+      true,
+    );
+  });
+
+  it("replaces a day with one workout", async () => {
+    const repo = memoryRepo(samplePlan());
+    const result = await handlePlanScheduleEdit({
+      repo,
+      userId: "user-1",
+      mode: "interactive",
+      userText: "Replace Saturday with a 10 mile long run",
+      operations: [
+        {
+          op: "update",
+          weekNumber: 1,
+          dayOfWeek: 5,
+          replace: true,
+          patch: { title: "Long run", type: "long", distanceMiles: 10 },
+        },
+      ],
+    });
+    assert.equal(result.success, true, result.success ? "" : result.message);
+    const stored = repo.current();
+    assert.ok(stored);
+    const saturday = stored.weeks
+      .find((week) => week.weekNumber === 1)
+      ?.workouts.filter((workout) => workout.dayOfWeek === 5);
+    assert.equal(saturday?.length, 1);
+    assert.equal(saturday?.[0]?.title, "Long run");
+    assert.equal(saturday?.[0]?.distanceMiles, 10);
+    assert.equal(findWorkout(stored, "long-sat"), null);
   });
 });

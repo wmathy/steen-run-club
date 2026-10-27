@@ -39,6 +39,7 @@ export type StoredWorkout = {
   distanceMiles: number | null;
   durationMin: number | null;
   targetPace: string | null;
+  effortLevel: string | null;
   completed: boolean;
   completionStatus: string | null;
 };
