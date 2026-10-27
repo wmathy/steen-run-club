@@ -5,14 +5,14 @@ import { DefaultChatTransport, type UIMessage } from "ai";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppLogo } from "@/components/app-logo";
-import { CoachMessageList } from "@/components/coach-message-list";
-import { pollForSavedChatReply } from "@/lib/chat-stream-recovery";
+import { ChatRecoveryRegion } from "@/components/chat-recovery-region";
+import { fetchChatWithImmediateRetry } from "@/lib/chat-fetch";
 import {
-  coachErrorMessage,
-  isXaiCreditsOrSpendingLimitError,
-} from "@/lib/coach-errors";
+  pollForSavedChatReply,
+  recoverChatOnVisible,
+} from "@/lib/chat-stream-recovery";
+import { isXaiCreditsOrSpendingLimitError } from "@/lib/coach-errors";
 import {
-  coachTranscriptStatus,
   isCoachReplyPending,
   isCoachTurnBusy,
   messagesToDisplay,
@@ -101,6 +101,9 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
       api: "/api/chat",
       // Send device timezone so the coach knows the athlete's real "today"
       body: timeZone ? { timeZone } : {},
+      // Safari can fail a stale keep-alive socket before the POST is sent.
+      // Retry that once. A response that already started is not retried.
+      fetch: fetchChatWithImmediateRetry,
     });
   }, []);
 
@@ -109,6 +112,11 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
     transport,
     onError: (streamError) => {
       lastStreamErrorRef.current = streamError;
+      // Show the typing indicator on the same paint as the stream error so
+      // the red banner does not flash before recovery polling starts.
+      if (!isXaiCreditsOrSpendingLimitError(streamError)) {
+        setCheckingSavedReply(true);
+      }
     },
     onFinish: async ({ messages: finished, isError, isAbort, isDisconnect }) => {
       if (isAbort) return;
@@ -209,6 +217,39 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
     beginRecoveryRef.current = beginStreamRecovery;
   }, [beginStreamRecovery]);
 
+  const recoverVisibleChat = useCallback(() => {
+    const snapshot = messages;
+    void (async () => {
+      const outcome = await recoverChatOnVisible({
+        visibilityState: document.visibilityState,
+        clientMessages: snapshot,
+        refresh: () => router.refresh(),
+        load: async () => {
+          const res = await fetch("/api/chat");
+          if (!res.ok) return null;
+          const data = (await res.json()) as { messages?: UIMessage[] };
+          return Array.isArray(data.messages) ? data.messages : null;
+        },
+      });
+      if (!mountedRef.current || !outcome) return;
+      recoveryTokenRef.current += 1;
+      recoveryKeyRef.current = null;
+      setCheckingSavedReply(false);
+      setMessages(outcome.messages);
+      streamRecoveredRef.current = true;
+      setStreamRecovered(true);
+      lastStreamErrorRef.current = null;
+      clearError();
+    })();
+  }, [clearError, messages, router, setMessages]);
+
+  useEffect(() => {
+    document.addEventListener("visibilitychange", recoverVisibleChat);
+    return () => {
+      document.removeEventListener("visibilitychange", recoverVisibleChat);
+    };
+  }, [recoverVisibleChat]);
+
   useEffect(() => {
     if (status !== "error") return;
     if (
@@ -235,10 +276,7 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
   }, [messages, status]);
 
   const busy = isCoachTurnBusy(status, checkingSavedReply);
-  const listStatus = coachTranscriptStatus(status, {
-    streamRecovered,
-    checkingSavedReply,
-  });
+  const creditError = isXaiCreditsOrSpendingLimitError(error);
 
   function sendUserText(text: string) {
     cancelStreamRecovery();
@@ -330,19 +368,14 @@ export function ChatUI({ initialMessages }: { initialMessages: UIMessage[] }) {
           </div>
         )}
 
-        <CoachMessageList messages={messages} status={listStatus} />
-
-        {checkingSavedReply && (
-          <div className="rounded-lg border border-card-border bg-card/80 px-3 py-2 text-sm text-muted">
-            Connection interrupted. Checking whether Coach finished saving…
-          </div>
-        )}
-
-        {error && !streamRecovered && !checkingSavedReply && (
-          <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
-            {coachErrorMessage(error)}
-          </div>
-        )}
+        <ChatRecoveryRegion
+          messages={messages}
+          status={status}
+          error={error}
+          checkingSavedReply={checkingSavedReply}
+          streamRecovered={streamRecovered}
+          creditError={creditError}
+        />
 
         <div ref={bottomRef} className="h-1 shrink-0" />
       </div>
